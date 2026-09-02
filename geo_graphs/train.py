@@ -19,7 +19,7 @@ from loguru import logger
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
 
-from . import cleanup, data, metrics, skeleton, tiles
+from . import cleanup, data, metrics, skeleton
 from .model import UNet, segmentation_loss
 
 
@@ -27,13 +27,13 @@ from .model import UNet, segmentation_loss
 class TrainConfig:
     """Everything that defines a training run.
 
-    Train and validation tiles are deliberately different patches of ground.
-    Crops drawn from one tile overlap and share a fabricated image, so a split
-    within a tile would leak and report a flattering validation score.
+    Train and validation samples are deliberately different patches of ground.
+    Crops drawn from one tile overlap, so a split within a tile would leak and
+    report a flattering validation score.
 
     Attributes:
-        train_center: ``(lat, lon)`` of the training tile.
-        val_center: ``(lat, lon)`` of the validation tile.
+        train_ids: Sample ids the source should supply for training.
+        val_ids: Sample ids held out for validation.
         tile_size_m: Tile side length in metres.
         crop_size: Model input size; must divide by ``2 ** depth``.
         n_train_crops: Crops sampled from the training tile.
@@ -48,8 +48,8 @@ class TrainConfig:
         device: ``"auto"``, or an explicit torch device string.
     """
 
-    train_center: tuple[float, float] = (36.1699, -115.1398)
-    val_center: tuple[float, float] = (36.1560, -115.1560)
+    train_ids: tuple[str, ...] = ("tile_0", "tile_2")
+    val_ids: tuple[str, ...] = ("tile_1",)
     tile_size_m: float = 1024.0
     crop_size: int = 256
     n_train_crops: int = 256
@@ -97,21 +97,35 @@ class TrainResult:
 
 
 class CropDataset(Dataset):
-    """Materializes crop windows from a single tile on demand.
+    """Materializes crop windows drawn from one or more tiles.
+
+    Spans samples because real imagery arrives as many small chips rather than
+    one large tile: SpaceNet Roads ships roughly 300 m squares, so a useful
+    training set is a few hundred chips rather than a few big scenes.
 
     Thin by design: it holds the windows chosen by :func:`data.crop_specs` and
     cuts them when asked, so the sampling logic stays testable without torch.
     """
 
-    def __init__(self, sample: data.TileSample, specs: Sequence[data.CropSpec]) -> None:
-        self.sample = sample
+    def __init__(
+        self,
+        samples: Sequence[data.TileSample],
+        specs: Sequence[tuple[int, data.CropSpec]],
+    ) -> None:
+        """
+        Args:
+            samples: Tiles the crops are cut from.
+            specs: ``(sample index, window)`` pairs.
+        """
+        self.samples = tuple(samples)
         self.specs = tuple(specs)
 
     def __len__(self) -> int:
         return len(self.specs)
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
-        image, mask = data.take_crop(self.sample, self.specs[index])
+        sample_index, spec = self.specs[index]
+        image, mask = data.take_crop(self.samples[sample_index], spec)
         return (
             torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))),
             torch.from_numpy(mask.astype(np.float32))[None],
@@ -137,32 +151,57 @@ def resolve_device(requested: str = "auto") -> torch.device:
 
 
 def build_dataset(
-    center: tuple[float, float], n_crops: int, config: TrainConfig, seed_offset: int
+    source: data.TileSource,
+    sample_ids: Sequence[str],
+    n_crops: int,
+    config: TrainConfig,
+    seed_offset: int,
 ) -> CropDataset:
-    """Load a tile and choose crop windows within it.
+    """Load samples and spread crop windows across them.
 
     Args:
-        center: ``(lat, lon)`` of the tile.
-        n_crops: Number of crops to sample.
+        source: Where imagery and labels come from.
+        sample_ids: Ids to load.
+        n_crops: Total crops to sample, divided between the loaded samples.
         config: Run configuration.
-        seed_offset: Added to the run seed, so train and validation tiles do
-            not draw identical windows.
+        seed_offset: Added to the run seed, so train and validation draw
+            different windows.
 
     Returns:
-        A dataset over that tile.
+        A dataset over those samples.
+
+    Raises:
+        ValueError: If no sample is large enough to hold one crop.
     """
-    sample = data.load_tile(
-        *center,
-        size_m=config.tile_size_m,
-        source=config.source,
-    )
-    specs = data.crop_specs(
-        sample.mask,
-        size=config.crop_size,
-        count=n_crops,
-        rng=np.random.default_rng(config.seed + seed_offset),
-    )
-    return CropDataset(sample, specs)
+    rng = np.random.default_rng(config.seed + seed_offset)
+    samples, specs = [], []
+
+    usable = []
+    for sample_id in sample_ids:
+        sample = source.load(sample_id)
+        if min(sample.mask.shape) < config.crop_size:
+            logger.warning(
+                f"{sample_id}: {sample.mask.shape} smaller than "
+                f"{config.crop_size}px crop, skipping"
+            )
+            continue
+        usable.append(sample)
+
+    if not usable:
+        raise ValueError(
+            f"no sample in {list(sample_ids)} fits a {config.crop_size}px crop"
+        )
+
+    per_sample = max(n_crops // len(usable), 1)
+    for index, sample in enumerate(usable):
+        samples.append(sample)
+        specs.extend(
+            (index, spec)
+            for spec in data.crop_specs(
+                sample.mask, size=config.crop_size, count=per_sample, rng=rng
+            )
+        )
+    return CropDataset(samples, specs)
 
 
 def _run_epoch(
@@ -208,6 +247,7 @@ def _run_epoch(
 
 def train(
     config: TrainConfig,
+    source: data.TileSource | None = None,
     checkpoint: Path | None = None,
     datasets: tuple[CropDataset, CropDataset] | None = None,
 ) -> TrainResult:
@@ -215,6 +255,8 @@ def train(
 
     Args:
         config: Run configuration.
+        source: Where imagery comes from. Defaults to the registry entry named
+            by ``config.source``.
         checkpoint: Optional path to write the trained weights to.
         datasets: Pre-built ``(train, val)`` datasets. Supplying them skips
             tile loading entirely, so a sweep over model settings pays the
@@ -227,8 +269,12 @@ def train(
     device = resolve_device(config.device)
 
     if datasets is None:
-        train_set = build_dataset(config.train_center, config.n_train_crops, config, 0)
-        val_set = build_dataset(config.val_center, config.n_val_crops, config, 1000)
+        if source is None:
+            source = data.TILE_SOURCE_REGISTRY[config.source]()
+        train_set = build_dataset(
+            source, config.train_ids, config.n_train_crops, config, 0
+        )
+        val_set = build_dataset(source, config.val_ids, config.n_val_crops, config, 1000)
     else:
         train_set, val_set = datasets
     logger.info(
@@ -296,7 +342,8 @@ def overfit_one_batch(
     device = resolve_device(config.device)
 
     if dataset is None:
-        dataset = build_dataset(config.train_center, batch_size, config, 0)
+        source = data.TILE_SOURCE_REGISTRY[config.source]()
+        dataset = build_dataset(source, config.train_ids[:1], batch_size, config, 0)
     images = torch.stack([dataset[i][0] for i in range(len(dataset))]).to(device)
     masks = torch.stack([dataset[i][1] for i in range(len(dataset))]).to(device)
 
@@ -336,35 +383,36 @@ def predict_tile_logits(
 ) -> np.ndarray:
     """Run the model over a whole tile in one pass.
 
+    Real imagery does not arrive in convenient sizes — SpaceNet chips vary by a
+    pixel or two around 396x324 — so the tile is reflection-padded up to the
+    model's downsampling factor and the result cropped back. Reflection rather
+    than zeros, because a black border invents a hard edge the model would
+    happily segment as a road.
+
     Args:
         model: Trained network.
         sample: Tile to segment.
         device: Device string.
 
     Returns:
-        ``(H, W)`` float32 logits.
-
-    Raises:
-        ValueError: If the tile does not divide by the model's downsampling
-            factor, which would misalign the skip connections.
+        ``(H, W)`` float32 logits, at the tile's own size.
     """
-    height, width = tiles.shape(sample.tile)
-    factor = 2**model.depth
-    if height % factor or width % factor:
-        raise ValueError(
-            f"tile {height}x{width} does not divide by {factor}; "
-            "crop or pad it before inference"
-        )
-
     torch_device = torch.device(device)
     model = model.to(torch_device).eval()
-    batch = torch.from_numpy(np.ascontiguousarray(sample.image.transpose(2, 0, 1)))[
-        None
-    ].to(torch_device)
+
+    image = np.ascontiguousarray(sample.image.transpose(2, 0, 1))
+    batch = torch.from_numpy(image)[None].to(torch_device)
+
+    height, width = batch.shape[-2:]
+    factor = 2**model.depth
+    pad_h = (-height) % factor
+    pad_w = (-width) % factor
+    if pad_h or pad_w:
+        batch = nn.functional.pad(batch, (0, pad_w, 0, pad_h), mode="reflect")
 
     with torch.no_grad():
         logits = model(batch)
-    return logits[0, 0].cpu().numpy()
+    return logits[0, 0, :height, :width].cpu().numpy()
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,10 +507,8 @@ def main() -> None:
     )
     result = train(config, checkpoint=args.checkpoint)
 
-    val = data.load_tile(
-        *config.val_center, size_m=config.tile_size_m, source=config.source
-    )
-    report = evaluate_tile(result.model, val)
+    source = data.TILE_SOURCE_REGISTRY[config.source]()
+    report = evaluate_tile(result.model, source.load(config.val_ids[0]))
 
     logger.info(f"mask IoU            {report.mask_iou:.4f}")
     logger.info(f"APLS raw skeleton   {report.apls_raw:.4f}")

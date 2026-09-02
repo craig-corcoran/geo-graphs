@@ -19,7 +19,7 @@ keeping it that way means it is testable without pulling a framework into the
 test.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -53,9 +53,17 @@ class TileSample:
 
 @runtime_checkable
 class TileSource(Protocol):
-    """Supplies imagery and labels for a tile."""
+    """Supplies imagery and labels, enumerated by opaque sample id.
 
-    def load(self, tile: Tile) -> TileSample: ...
+    Sources enumerate rather than accept a caller-chosen :class:`Tile`, because
+    real imagery comes as fixed chips on the provider's own grid. Only a
+    synthetic source is free to put a tile wherever it likes, so the interface
+    is written for the constrained case.
+    """
+
+    def ids(self) -> tuple[str, ...]: ...
+
+    def load(self, sample_id: str) -> TileSample: ...
 
 
 def synthesize_image(
@@ -121,24 +129,64 @@ class SyntheticTileSource:
     imagery is downloaded. The labels are genuine; only the pixels are invented.
     """
 
+    #: Tile centres used when none are given: downtown Las Vegas and three
+    #: neighbours, inside SpaceNet AOI 2 so the ground matches the real data.
+    DEFAULT_CENTERS = (
+        (36.1699, -115.1398),
+        (36.1560, -115.1560),
+        (36.1820, -115.1250),
+        (36.1440, -115.1700),
+    )
+
     def __init__(
         self,
+        centers: Sequence[tuple[float, float]] | None = None,
+        size_m: float = 1024.0,
+        resolution: float = 1.0,
         seed: int = 0,
         half_width_px: int = 2,
         network_type: str = "drive",
     ) -> None:
         """
         Args:
+            centers: ``(lat, lon)`` tile centres to offer. Defaults to
+                :data:`DEFAULT_CENTERS`.
+            size_m: Tile side length in metres.
+            resolution: Metres per pixel.
             seed: Seed for image fabrication, so samples are reproducible.
             half_width_px: Road half-width passed to the rasterizer.
             network_type: osmnx network filter for the ground-truth query.
         """
+        self.centers = tuple(centers if centers is not None else self.DEFAULT_CENTERS)
+        self.size_m = size_m
+        self.resolution = resolution
         self.seed = seed
         self.half_width_px = half_width_px
         self.network_type = network_type
 
-    def load(self, tile: Tile) -> TileSample:
-        """Fetch ground truth for a tile and fabricate matching imagery."""
+    def ids(self) -> tuple[str, ...]:
+        """Return one id per configured tile centre."""
+        return tuple(f"tile_{i}" for i in range(len(self.centers)))
+
+    def load(self, sample_id: str) -> TileSample:
+        """Fetch ground truth for one tile and fabricate matching imagery.
+
+        Args:
+            sample_id: An id from :meth:`ids`.
+
+        Returns:
+            The loaded sample.
+
+        Raises:
+            KeyError: If the id is not one this source offers.
+        """
+        if sample_id not in self.ids():
+            raise KeyError(f"unknown sample {sample_id!r}; have {self.ids()}")
+        lat, lon = self.centers[int(sample_id.removeprefix("tile_"))]
+        tile = tiles.tile_from_center(
+            lat, lon, size_m=self.size_m, resolution=self.resolution
+        )
+
         truth = ground_truth_graph(tile, network_type=self.network_type)
         mask = raster.rasterize(truth, tile, half_width_px=self.half_width_px)
         # Seed off the tile so the same tile always yields the same image.
@@ -152,8 +200,8 @@ _: type[TileSource] = SyntheticTileSource
 
 #: Selects a tile source by config key. Values are factories, so each lookup
 #: yields a fresh instance rather than a shared one.
-TILE_SOURCE_REGISTRY: dict[str, Callable[[], TileSource]] = {
-    "synthetic": lambda: SyntheticTileSource(),
+TILE_SOURCE_REGISTRY: dict[str, Callable[..., TileSource]] = {
+    "synthetic": lambda **kw: SyntheticTileSource(**kw),
 }
 
 
@@ -248,21 +296,13 @@ def take_crop(sample: TileSample, spec: CropSpec) -> tuple[np.ndarray, np.ndarra
     return sample.image[rows, cols], sample.mask[rows, cols]
 
 
-def load_tile(
-    lat: float,
-    lon: float,
-    size_m: float = 1024.0,
-    resolution: float = 1.0,
-    source: str = "synthetic",
-) -> TileSample:
-    """Load one tile through the registry.
+def load_sample(sample_id: str, source: str = "synthetic", **kwargs) -> TileSample:
+    """Load one sample through the registry.
 
     Args:
-        lat: Tile centre latitude in degrees.
-        lon: Tile centre longitude in degrees.
-        size_m: Tile side length in metres.
-        resolution: Metres per pixel.
+        sample_id: Identifier the chosen source recognizes.
         source: Registry key naming the tile source.
+        **kwargs: Passed to the source's constructor.
 
     Returns:
         The loaded sample.
@@ -274,5 +314,4 @@ def load_tile(
         raise KeyError(
             f"unknown tile source {source!r}; have {sorted(TILE_SOURCE_REGISTRY)}"
         )
-    tile = tiles.tile_from_center(lat, lon, size_m=size_m, resolution=resolution)
-    return TILE_SOURCE_REGISTRY[source]().load(tile)
+    return TILE_SOURCE_REGISTRY[source](**kwargs).load(sample_id)

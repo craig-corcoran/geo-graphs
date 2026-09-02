@@ -41,18 +41,25 @@ class APLSResult:
             real roads are missing.
         prop_to_gt: Proposal routes measured on the ground truth. Falls when
             roads are invented.
-        n_control: Control points sampled in the forward direction.
+        n_control_gt: Control points sampled from the ground truth, scoring
+            the ``gt_to_prop`` direction.
+        n_control_prop: Control points sampled from the proposal, scoring the
+            ``prop_to_gt`` direction. Running far above ``n_control_gt`` means
+            the proposal carries more curved edges than the truth does, which
+            is traced-geometry noise rather than extra road.
     """
 
     score: float
     gt_to_prop: float
     prop_to_gt: float
-    n_control: int
+    n_control_gt: int
+    n_control_prop: int
 
     def __repr__(self) -> str:
         return (
             f"APLS(score={self.score:.4f}, gt->prop={self.gt_to_prop:.4f}, "
-            f"prop->gt={self.prop_to_gt:.4f}, n_control={self.n_control})"
+            f"prop->gt={self.prop_to_gt:.4f}, "
+            f"n_control={self.n_control_gt}/{self.n_control_prop})"
         )
 
 
@@ -160,12 +167,13 @@ def apls(
             ``max_control`` is ``None``.
 
     Returns:
-        The combined score and both directional scores.
+        The combined score, both directional scores, and each direction's
+        control point count.
     """
     rng = np.random.default_rng(seed)
     args = (spacing, max_snap, max_control, min_path_length, sampling)
-    fwd, n_control = _directional(truth, proposal, *args, rng)
-    rev, _ = _directional(proposal, truth, *args, rng)
+    fwd, n_control_gt = _directional(truth, proposal, *args, rng)
+    rev, n_control_prop = _directional(proposal, truth, *args, rng)
 
     combined = 0.0 if fwd + rev == 0 else 2.0 * fwd * rev / (fwd + rev)
-    return APLSResult(combined, fwd, rev, n_control)
+    return APLSResult(combined, fwd, rev, n_control_gt, n_control_prop)

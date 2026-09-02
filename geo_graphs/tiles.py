@@ -5,6 +5,7 @@ raster convention. Holding resolution at 1.0 makes one pixel one metre, so
 graph lengths and APLS distances are already in metres with no conversion.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -142,3 +143,44 @@ def lonlat_bounds(tile: Tile, pad_m: float = 0.0) -> tuple[float, float, float, 
     ys = [y_min - pad_m, y_min - pad_m, y_max + pad_m, y_max + pad_m]
     lons, lats = to_wgs.transform(xs, ys)
     return (min(lons), min(lats), max(lons), max(lats))
+
+
+def tile_from_transform(
+    crs: CRS, transform: Sequence[float], width: int, height: int
+) -> Tile:
+    """Build a tile from a raster's own georeferencing.
+
+    Imagery carries its CRS and affine transform with it, so a tile covering a
+    real GeoTIFF is derived from the file rather than from a centre point.
+
+    Args:
+        crs: The raster's coordinate reference system.
+        transform: Affine coefficients ``(a, b, c, d, e, f)`` mapping pixel to
+            world as ``x = a*col + b*row + c`` and ``y = d*col + e*row + f``.
+        width: Raster width in pixels.
+        height: Raster height in pixels.
+
+    Returns:
+        A tile over the same ground as the raster.
+
+    Raises:
+        ValueError: If the CRS is geographic, or the raster is rotated, or its
+            pixels are not square. Each would break the assumption that pixel
+            distance is ground distance, which the graph metrics rely on.
+    """
+    if crs.is_geographic:
+        # A degree of longitude is shorter than a degree of latitude everywhere
+        # but the equator, so a raster that is square in degrees is not square
+        # on the ground. SpaceNet ships EPSG:4326 imagery that looks uniform in
+        # its own units and is 0.24 m by 0.30 m in reality. Reproject first.
+        raise ValueError(
+            f"{crs} is geographic; reproject to a metric CRS before building a tile"
+        )
+
+    a, b, c, d, e, f = (float(v) for v in transform)
+    if b or d:
+        raise ValueError(f"rotated rasters are unsupported; got shear ({b}, {d})")
+    if not np.isclose(a, -e):
+        raise ValueError(f"non-square pixels: x resolution {a}, y resolution {-e}")
+
+    return Tile(crs=crs, x_min=c, y_max=f, height=height, width=width, resolution=a)

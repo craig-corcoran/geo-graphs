@@ -142,14 +142,24 @@ def test_registry_entries_satisfy_the_protocol():
     )
 
 
-def test_load_tile_rejects_an_unknown_source():
+def test_load_sample_rejects_an_unknown_source():
     with pytest.raises(KeyError, match="unknown tile source"):
-        data.load_tile(36.1699, -115.1398, source="spacenet")
+        data.load_sample("tile_0", source="nope")
+
+
+def test_synthetic_source_enumerates_its_tiles():
+    source = data.SyntheticTileSource()
+    assert source.ids() == tuple(f"tile_{i}" for i in range(len(source.centers)))
+
+
+def test_synthetic_source_rejects_an_unknown_id():
+    with pytest.raises(KeyError, match="unknown sample"):
+        data.SyntheticTileSource().load("tile_999")
 
 
 @pytest.mark.network
-def test_load_tile_produces_aligned_image_and_labels():
-    sample = data.load_tile(36.1699, -115.1398, size_m=512.0)
+def test_load_sample_produces_aligned_image_and_labels():
+    sample = data.load_sample("tile_0", size_m=512.0)
 
     assert sample.image.shape[:2] == sample.mask.shape
     assert sample.mask.any()
@@ -158,6 +168,6 @@ def test_load_tile_produces_aligned_image_and_labels():
 
 @pytest.mark.network
 def test_the_same_tile_yields_the_same_image():
-    a = data.load_tile(36.1699, -115.1398, size_m=512.0)
-    b = data.load_tile(36.1699, -115.1398, size_m=512.0)
+    a = data.load_sample("tile_0", size_m=512.0)
+    b = data.load_sample("tile_0", size_m=512.0)
     assert np.array_equal(a.image, b.image)

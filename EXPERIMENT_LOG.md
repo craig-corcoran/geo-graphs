@@ -375,3 +375,171 @@ global constant would rate a good model on hard tiles as a bad one.
 SpaceNet Roads, add a `SpaceNetTileSource`, register it. After that the first
 real question is threshold selection — `predict_mask` takes one, and section 6 of
 the walkthrough is the argument for tuning it on APLS rather than IoU.
+
+---
+
+## 2026-09-01 (later) — Interior control points buy geometry, not topology
+
+**Change under test.** Not a pipeline change — a probe of the control point
+sampling rule, prompted by asking what edge sampling is actually for when the
+two graphs already share a node set. Junction-only sampling is reachable
+without new code: `spacing=1e9` puts every edge under the reference rule's
+`0.75 * spacing` floor, so no interior points are cut.
+
+**What was measured.** Two proposals built on the `curvy_graph` fixture (4x4
+grid, every third edge bowed 20 m), each constructed to have a node set
+*identical* to the truth graph. Synthetic geometry, so these are metric
+characterization numbers, not pipeline results.
+
+| proposal | junction-only (C=16) | reference (C=32) | uniform (C=48) |
+|---|---|---|---|
+| mirrored bows, arc length preserved | **1.0000** | 0.2948 | 0.6777 |
+| bows flattened to their chords | 0.9687 | 0.9632 | 0.9676 |
+
+The mirrored proposal has the same nodes and the same total length as the truth
+(2473.8 m both), with every curved road displaced by up to 40 m. Junction-only
+sampling calls it perfect. The flattened proposal is the control: its error
+lands *in path length*, the junctions already carry it, and interior points add
+nothing.
+
+**Snapping is the only channel through which physical location enters the
+score, and snapping happens only at control points.** Junction-only sampling
+therefore collapses APLS to a comparison of the shortest-path metric on the
+shared node set — a pure graph comparison, blind to where the roads run.
+Topology is carried by the junctions for free; the interior points are what buy
+geometric sensitivity.
+
+**That sensitivity is gated entirely by `max_snap`.** Same mirrored proposal,
+reference sampling:
+
+| max_snap | 10 | 25 | 40 | 60 |
+|---|---|---|---|---|
+| APLS | 0.2419 | 0.2948 | **0.8995** | 0.8995 |
+
+Peak displacement is 40 m; at or above it the same proposal jumps from 0.29 to
+0.90. So "geometric sensitivity" means precisely "sensitivity to displacement
+exceeding `max_snap`" — below that threshold APLS is designed not to care. Any
+claim that an APLS number reflects geometric accuracy has to quote `max_snap`
+alongside it.
+
+**This is a better justification for the straight-edge skip than the one in the
+2026-08-23 entry.** That reading was about path-length redundancy: an interior
+point on a straight edge has distances determined by its two endpoints. The
+sharper statement is about degrees of freedom in the *geometry*. A straight
+edge's interior is fixed by its endpoints, so a control point there can discover
+nothing; a curved edge's interior is unconstrained by them, which is exactly
+where a proposal can be wrong while the junctions look fine. That is why
+reference sampling detects the mirrored displacement far better than uniform
+(0.2948 against 0.6777) despite carrying a third fewer points — it concentrates
+the sample where geometry is free, while uniform dilutes it with points on
+straight edges that were never going to disagree.
+
+**Only the source graph is densified per direction.** `_directional(A, B)`
+samples `A`; `B` contributes geometry for snapping and edge lengths for
+Dijkstra. Densifying `B` would be a no-op for shortest paths — inserting a
+degree-2 node into an edge changes no distance. The reference densifies both
+graphs (`apls_reference.py:1052`, `:1105`) because each is the source of its own
+direction, not to match densities.
+
+**What changed.** `APLSResult` now carries `n_control_gt` and `n_control_prop`;
+the reverse direction's count was previously computed and discarded. On the Las
+Vegas round trip:
+
+| | nodes | edges | length | C (reference) | C (uniform) |
+|---|---|---|---|---|---|
+| truth | 144 | 188 | 19435.3 | 176 | 435 |
+| recovered | 141 | 214 | 19301.8 | 179 | 414 |
+
+**What it motivates.** The two counts should not be normalized to match — their
+ratio is a diagnostic. Here they are within 2% while the recovered graph carries
+26 more edges for 0.7% *less* road, which is fragmentation at the junctions
+rather than curved-edge noise. A proposal whose `n_control_prop` runs well above
+`n_control_gt` is failing the straightness test on edges the truth considers
+straight, i.e. wobbly traced geometry. Worth watching once model proposals
+replace perfect-mask round trips, since it separates that failure from
+fragmentation, which the edge count catches instead.
+
+---
+
+## 2026-09-01 (later) — Real SpaceNet imagery, and two things the data does differently
+
+**Change under test.** Downloaded the SpaceNet Roads sample (0.71 GB, all four
+AOIs, ten chips each) rather than the 24 GB Vegas tarball, on the grounds that
+every unknown worth resolving — georeferencing, label format, alignment — is
+answerable from ten chips. Built `spacenet.SpaceNetTileSource` behind the
+existing `TileSource` Protocol.
+
+Two assumptions broke, and both would have quietly corrupted every model number.
+
+### 1. The imagery is geographic, not projected
+
+RGB-PanSharpen ships as EPSG:4326. A Vegas pixel is **0.243 m east-west and
+0.300 m north-south** — square in degrees, and 19% out of square on the ground.
+Our entire pipeline measures distance in pixels and calls it metres.
+
+Each chip is now reprojected to its local UTM zone at a fixed metric resolution
+on load, defaulting to 1 m/px to match both the published numbers and our own
+ceiling measurements. `tiles.tile_from_transform` refuses a geographic CRS
+outright: its earlier square-pixel check compared the transform's own units, so
+it would have accepted this raster and been wrong.
+
+Alignment is verified rather than assumed. Vegas asphalt is dark against bright
+desert, so a correctly aligned mask has measurably darker pixels underneath it —
+0.222 on road against 0.345 off it. A reprojection slip would erase that gap.
+
+### 2. The labels are not noded
+
+SpaceNet ships each road as a single LineString running **straight through its
+intersections**. Two crossing streets share no vertex, so a graph built from the
+features as given is a heap of disconnected stubs. One chip: 33 edges across
+**30 components**, largest holding 5% of the nodes.
+
+The damage lands entirely in `prop→gt`, because the rasterized mask joins what
+the labels leave apart and the metric then calls every junction invented:
+
+| | Unnoded | Noded |
+|---|---|---|
+| components (img794) | 30 | 3 |
+| `gt→prop` | 0.8788 | — |
+| `prop→gt` | 0.0549 | 0.9916 |
+| **mean ceiling, 10 chips** | **0.245** | **0.9822** |
+
+Snapping nearby endpoints does not fix it — even an 8 px tolerance left 26
+components — because the endpoints are not near each other. The side street
+meets the main road's *interior*. The fix is noding: split every line at every
+intersection, via `shapely.ops.unary_union`.
+
+**Without this, every Stage 1 model number would have been measured against a
+ceiling of 0.25.** OSM does this noding for us, which is exactly why the OSM
+path never needed it and why the gap was invisible until real labels arrived.
+
+A related sharp edge: `unary_union` emits a degenerate zero-length piece at some
+intersections, which becomes a self-loop adding two to a junction's degree and
+no geometry at all. Those are now dropped.
+
+`unary_union` only splits at *exact* intersections, and real SpaceNet labels do
+intersect exactly. A test built around a T-junction whose endpoint reprojection
+had nudged a fraction of a pixel off the line did not split at all — worth
+knowing as a fragility, and the reason the regression test uses an unambiguous
+crossing.
+
+### End to end on real imagery
+
+Eight chips for training, two held out, 15 epochs:
+
+| | img767 | img794 |
+|---|---|---|
+| pixel IoU | 0.4658 | 0.4431 |
+| APLS | 0.5147 | 0.3311 |
+| APLS ceiling | 0.9832 | 0.9826 |
+| fraction of ceiling | 0.523 | 0.337 |
+
+**Eight chips is roughly 1 km² of training data.** Published SpaceNet numbers of
+63–74 APLS come from thousands of chips, so these are not comparable to anything
+and the epoch-to-epoch validation swing (IoU bouncing between 0.002 and 0.48)
+is what a dataset this small looks like. What the run establishes is that the
+path is complete and the ceiling is real.
+
+**What it motivates.** The loader is proven, so the 24 GB AOI 2 Vegas tarball is
+now worth pulling. After that the first genuine experiment is threshold
+selection, tuned on APLS rather than IoU.

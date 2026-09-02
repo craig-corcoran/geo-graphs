@@ -36,12 +36,20 @@ proposing new architectural work.
 
 ## Data
 
-- **No imagery yet — the last thing blocking Stage 1.** Ground truth comes from
-  OSM directly, and `data.SyntheticTileSource` fabricates imagery so the model
-  and training loop could be built and tested. Remaining work is a
-  `SpaceNetTileSource` (AWS S3) registered under `TILE_SOURCE_REGISTRY`; nothing
-  downstream changes. The Las Vegas dev tile is inside SpaceNet AOI 2 so the
-  tuning transfers.
+- ~~**No imagery yet.**~~ Done 2026-09-01. The 0.71 GB sample is loaded through
+  `spacenet.SpaceNetTileSource`, reprojected to UTM and noded. Ten chips per AOI.
+- **Only the sample is downloaded.** Ten Vegas chips is about 1 km², far too
+  little to train on; validation swings wildly between epochs. The 24 GB
+  `SN3_roads_train_AOI_2_Vegas.tar.gz` is the next pull now that the loader is
+  proven. Disk has room.
+- **Noding depends on exact intersections.** `shapely.ops.unary_union` splits
+  only where geometries truly meet. Real SpaceNet labels do, but a line ending a
+  fraction of a pixel short of another is left disconnected and silently costs
+  connectivity. A snap-then-node pass would be more robust.
+- **Chips are not mosaicked.** Each is scored independently at roughly 300 m
+  square, which is small enough that a single break moves APLS a lot. Stitching
+  adjacent chips into larger tiles would give steadier per-tile numbers and
+  exercise the tiling problem the plan mentions.
 - **Threshold is untuned.** `model.predict_mask` takes one and it is a real
   hyperparameter trading the two APLS directions against each other. Tune it on
   APLS, not IoU, once a model is trained on real imagery.

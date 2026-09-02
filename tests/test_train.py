@@ -23,7 +23,7 @@ def synthetic_sample(size: int = 128) -> data.TileSample:
 def tiny_dataset(n_crops: int = 8, size: int = 32) -> train.CropDataset:
     sample = synthetic_sample()
     specs = data.crop_specs(sample.mask, size, n_crops, np.random.default_rng(0))
-    return train.CropDataset(sample, specs)
+    return train.CropDataset([sample], [(0, spec) for spec in specs])
 
 
 def test_crop_dataset_yields_channel_first_float_tensors():
@@ -103,13 +103,25 @@ def test_predict_tile_logits_covers_the_whole_tile():
     assert np.isfinite(logits).all()
 
 
-def test_predict_tile_logits_rejects_a_tile_that_does_not_divide():
-    """Skip connections misalign silently otherwise, so fail loudly instead."""
+def test_predict_tile_logits_handles_an_awkward_tile_size():
+    """Real chips are not multiples of the downsampling factor.
+
+    SpaceNet tiles land on sizes like 396x323, so inference pads up and crops
+    back rather than refusing. The output must still match the input exactly.
+    """
     sample = synthetic_sample(size=100)
     model = UNet(in_channels=3, widths=(8, 16, 32, 64))
 
-    with pytest.raises(ValueError, match="does not divide"):
-        train.predict_tile_logits(model, sample)
+    logits = train.predict_tile_logits(model, sample)
+
+    assert logits.shape == sample.mask.shape
+    assert np.isfinite(logits).all()
+
+
+def test_predict_tile_logits_is_unaffected_by_padding_on_exact_sizes():
+    sample = synthetic_sample(size=128)
+    model = UNet(in_channels=3, widths=(8, 16)).eval()
+    assert train.predict_tile_logits(model, sample).shape == (128, 128)
 
 
 def test_evaluate_tile_separates_the_stages():
