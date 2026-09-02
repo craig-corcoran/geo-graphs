@@ -550,6 +550,54 @@ def evaluate_tiles(
     )
 
 
+def build_source(
+    aoi_root: Path | None, source_key: str, resolution: float
+) -> tuple[data.TileSource, str]:
+    """Construct the tile source named on the command line.
+
+    Args:
+        aoi_root: Extracted SpaceNet AOI directory, or ``None`` for synthetic.
+        source_key: Registry key, used only when ``aoi_root`` is ``None``.
+        resolution: Metres per pixel, for real imagery.
+
+    Returns:
+        ``(source, key)`` where key names which source was built.
+    """
+    if aoi_root is None:
+        return data.TILE_SOURCE_REGISTRY[source_key](), source_key
+
+    from . import spacenet
+
+    spacenet.register(data.TILE_SOURCE_REGISTRY)
+    return (
+        data.TILE_SOURCE_REGISTRY["spacenet"](aoi_root=aoi_root, resolution=resolution),
+        "spacenet",
+    )
+
+
+def split_ids(
+    ids: Sequence[str], val_fraction: float, seed: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Shuffle sample ids and hold out a fraction for validation.
+
+    Shuffled rather than taken in order, because SpaceNet chip numbering runs
+    along the ground: a contiguous tail is one neighbourhood, not a sample of
+    the city.
+
+    Args:
+        ids: Every available sample id.
+        val_fraction: Share to hold out.
+        seed: Seed for the shuffle.
+
+    Returns:
+        ``(train_ids, val_ids)``.
+    """
+    shuffled = list(ids)
+    np.random.default_rng(seed).shuffle(shuffled)
+    n_val = max(round(len(shuffled) * val_fraction), 1)
+    return tuple(shuffled[n_val:]), tuple(shuffled[:n_val])
+
+
 def main() -> None:
     """Command line entry point."""
     import argparse
@@ -562,38 +610,59 @@ def main() -> None:
     parser.add_argument("--crop-size", type=int, default=defaults.crop_size)
     parser.add_argument("--tile-size", type=float, default=defaults.tile_size_m)
     parser.add_argument("--train-crops", type=int, default=defaults.n_train_crops)
+    parser.add_argument("--val-crops", type=int, default=defaults.n_val_crops)
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument("--lr", type=float, default=defaults.lr)
     parser.add_argument("--device", default=defaults.device)
     parser.add_argument("--source", default=defaults.source)
+    parser.add_argument(
+        "--aoi-root", type=Path, help="extracted SpaceNet AOI; overrides --source"
+    )
+    parser.add_argument("--resolution", type=float, default=1.0)
+    parser.add_argument("--val-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--max-eval-tiles",
+        type=int,
+        default=40,
+        help="cap on validation tiles scored end to end; graph extraction is "
+        "the slow part, and 40 already gives a stable spread",
+    )
+    parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
 
+    source, source_key = build_source(args.aoi_root, args.source, args.resolution)
+    train_ids, val_ids = split_ids(source.ids(), args.val_fraction, args.seed)
+    logger.info(f"{source_key}: {len(train_ids)} train tiles, {len(val_ids)} val tiles")
+
     config = TrainConfig(
+        train_ids=train_ids,
+        val_ids=val_ids,
         epochs=args.epochs,
         crop_size=args.crop_size,
         tile_size_m=args.tile_size,
         n_train_crops=args.train_crops,
+        n_val_crops=args.val_crops,
         batch_size=args.batch_size,
         lr=args.lr,
         device=args.device,
-        source=args.source,
+        source=source_key,
+        seed=args.seed,
     )
-    result = train(config, checkpoint=args.checkpoint)
+    result = train(config, source=source, checkpoint=args.checkpoint)
 
-    source = data.TILE_SOURCE_REGISTRY[config.source]()
-    report = evaluate_tile(result.model, source.load(config.val_ids[0]))
+    scored = config.val_ids[: args.max_eval_tiles]
+    report = evaluate_tiles(result.model, source, scored)
 
+    logger.info(f"scored {report.n_scored} tiles ({report.n_skipped} had no roads)")
     logger.info(f"mask IoU            {report.mask_iou:.4f}")
-    logger.info(f"APLS raw skeleton   {report.apls_raw:.4f}")
-    logger.info(f"APLS cleaned        {report.apls_cleaned:.4f}")
-    logger.info(
-        f"APLS ceiling        {report.ceiling_apls:.4f}  (perfect mask, this tile)"
-    )
+    logger.info(f"APLS mean           {report.apls_cleaned:.4f}")
+    logger.info(f"APLS median         {report.apls_median:.4f}")
+    logger.info(f"APLS ceiling        {report.ceiling_apls:.4f}  (perfect mask)")
     logger.info(f"fraction of ceiling {report.fraction_of_ceiling:.3f}")
 
-    if config.source == "synthetic":
+    if source_key == "synthetic":
         logger.warning(
             "synthetic imagery: these numbers prove plumbing, not quality -- "
             "the image is derived from the label. Do not report them."
@@ -606,7 +675,10 @@ def main() -> None:
                 {
                     "config": asdict(config),
                     "history": [asdict(m) for m in result.history],
-                    "eval": asdict(report),
+                    "eval": {
+                        **{k: v for k, v in asdict(report).items() if k != "per_tile"},
+                        "per_tile": [asdict(r) for r in report.per_tile],
+                    },
                 },
                 indent=2,
                 default=str,

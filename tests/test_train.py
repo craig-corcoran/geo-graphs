@@ -215,3 +215,36 @@ def test_evaluate_tiles_on_an_empty_set_is_not_an_error():
     report = train.evaluate_tiles(UNet(in_channels=3, widths=(8, 16)), source, ())
     assert report.n_scored == 0
     assert report.per_tile == ()
+
+
+def test_split_ids_holds_out_the_requested_fraction():
+    ids = tuple(f"img{i}" for i in range(100))
+    train_ids, val_ids = train.split_ids(ids, val_fraction=0.2, seed=0)
+
+    assert len(val_ids) == 20
+    assert len(train_ids) == 80
+    assert not set(train_ids) & set(val_ids)
+    assert set(train_ids) | set(val_ids) == set(ids)
+
+
+def test_split_ids_shuffles_rather_than_taking_a_contiguous_tail():
+    """SpaceNet chip numbers run along the ground.
+
+    A contiguous tail would be one neighbourhood held out, not a sample of the
+    city, and would flatter or punish the model depending on what is there.
+    """
+    ids = tuple(f"img{i}" for i in range(100))
+    _, val_ids = train.split_ids(ids, val_fraction=0.2, seed=0)
+    assert val_ids != ids[:20]
+
+
+def test_split_ids_is_reproducible_and_seed_dependent():
+    ids = tuple(f"img{i}" for i in range(100))
+    assert train.split_ids(ids, 0.2, seed=0) == train.split_ids(ids, 0.2, seed=0)
+    assert train.split_ids(ids, 0.2, seed=1) != train.split_ids(ids, 0.2, seed=0)
+
+
+def test_split_ids_always_holds_out_at_least_one():
+    train_ids, val_ids = train.split_ids(("a", "b", "c"), val_fraction=0.01, seed=0)
+    assert len(val_ids) == 1
+    assert len(train_ids) == 2
