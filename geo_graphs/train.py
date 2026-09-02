@@ -20,7 +20,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
 
 from . import cleanup, data, metrics, skeleton
-from .model import UNet, segmentation_loss
+from .model import UNet, predict_mask, segmentation_loss
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +236,7 @@ def _run_epoch(
                 optimizer.step()
 
             losses.append(float(loss.detach()))
-            predicted = torch.sigmoid(logits) > 0.5
+            predicted = predict_mask(logits)
             target = masks > 0.5
             intersections += float((predicted & target).sum())
             unions += float((predicted | target).sum())
@@ -457,7 +457,7 @@ def evaluate_tile(
         Per-stage quality for this tile.
     """
     logits = predict_tile_logits(model, sample, device=device)
-    predicted = logits > float(np.log(threshold / (1.0 - threshold)))
+    predicted = predict_mask(logits, threshold)
 
     raw = skeleton.graph_from_mask(predicted)
     cleaned = cleanup.clean(raw)

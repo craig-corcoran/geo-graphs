@@ -1,9 +1,13 @@
+import math
+
+import numpy as np
 import pytest
 import torch
 from torch.nn import functional as F
 
 from geo_graphs.model import (
     UNet,
+    logit,
     predict_mask,
     segmentation_loss,
     soft_dice_loss,
@@ -101,3 +105,48 @@ def test_model_is_deterministic_in_eval_mode():
     x = torch.randn(1, 3, 32, 32)
     with torch.no_grad():
         assert torch.equal(model(x), model(x))
+
+
+def test_logit_inverts_sigmoid():
+    for p in (0.1, 0.5, 0.9):
+        assert float(torch.sigmoid(torch.tensor(logit(p)))) == pytest.approx(p)
+
+
+def test_logit_is_infinite_at_the_endpoints():
+    assert logit(0.0) == -math.inf
+    assert logit(1.0) == math.inf
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1])
+def test_logit_rejects_a_probability_outside_the_unit_interval(bad):
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        logit(bad)
+
+
+def test_predict_mask_preserves_array_type():
+    """Inference returns numpy, training stays in torch; one definition serves both."""
+    values = [-2.0, 0.0, 2.0]
+    assert isinstance(predict_mask(torch.tensor(values)), torch.Tensor)
+    assert isinstance(predict_mask(np.array(values)), np.ndarray)
+
+
+def test_predict_mask_agrees_across_array_types():
+    values = np.linspace(-6.0, 6.0, 101, dtype=np.float32)
+    for threshold in (0.1, 0.5, 0.9):
+        torch_mask = predict_mask(torch.from_numpy(values), threshold).numpy()
+        assert np.array_equal(predict_mask(values, threshold), torch_mask)
+
+
+def test_predict_mask_matches_the_probability_space_comparison():
+    """Logit-space thresholding is an optimization, not a different decision."""
+    values = torch.linspace(-8.0, 8.0, 257)
+    for threshold in (0.05, 0.25, 0.5, 0.75, 0.95):
+        assert torch.equal(
+            predict_mask(values, threshold), torch.sigmoid(values) > threshold
+        )
+
+
+def test_predict_mask_at_extreme_thresholds():
+    values = torch.tensor([-50.0, 0.0, 50.0])
+    assert predict_mask(values, threshold=0.0).all()
+    assert not predict_mask(values, threshold=1.0).any()

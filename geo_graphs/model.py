@@ -11,8 +11,10 @@ out of the forward pass is what lets the loss use the numerically stable
 """
 
 import itertools
+import math
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -134,18 +136,53 @@ def segmentation_loss(
     return (1.0 - dice_weight) * bce + dice_weight * soft_dice_loss(logits, targets)
 
 
-def predict_mask(logits: Tensor, threshold: float = 0.5) -> Tensor:
-    """Threshold logits into a boolean mask.
-
-    The threshold is a real hyperparameter of the pipeline, not a formality:
-    it trades the two APLS directions against each other, and should be tuned
-    on APLS rather than on pixel overlap.
+def logit(probability: float) -> float:
+    """Inverse of the sigmoid: the raw output that yields this probability.
 
     Args:
-        logits: Raw model outputs.
+        probability: A value in ``[0, 1]``.
+
+    Returns:
+        The corresponding logit, infinite at the endpoints.
+
+    Raises:
+        ValueError: If the probability lies outside ``[0, 1]``.
+    """
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError(f"probability must be in [0, 1]; got {probability}")
+    if probability == 0.0:
+        return -math.inf
+    if probability == 1.0:
+        return math.inf
+    return math.log(probability / (1.0 - probability))
+
+
+def predict_mask[ArrayT: (np.ndarray, Tensor)](
+    logits: ArrayT, threshold: float = 0.5
+) -> ArrayT:
+    """Threshold logits into a boolean road mask.
+
+    The comparison happens in logit space rather than probability space. Both
+    give the same answer because the sigmoid is monotonic, but this way there is
+    no sigmoid pass over the array and the same expression works on a numpy
+    array or a torch tensor without branching on type. That matters because
+    inference returns numpy while the training loop stays in torch, and both
+    have to reach the same decision.
+
+    This is the single definition of "is this pixel road", deliberately. The
+    threshold is a real hyperparameter, not a formality: raising it thins the
+    mask, so fewer connections are invented and more roads are severed. It
+    trades the two APLS directions directly against each other and should be
+    tuned on APLS rather than on pixel overlap.
+
+    Args:
+        logits: Raw model outputs, any shape.
         threshold: Probability above which a pixel counts as road.
 
     Returns:
-        Boolean tensor of the same shape.
+        A boolean array of the same shape and type as ``logits``.
+
+    Raises:
+        ValueError: If the threshold lies outside ``[0, 1]``.
     """
-    return torch.sigmoid(logits) > threshold
+    return logits > logit(threshold)

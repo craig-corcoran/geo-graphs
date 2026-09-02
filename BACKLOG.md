@@ -46,6 +46,10 @@ proposing new architectural work.
   only where geometries truly meet. Real SpaceNet labels do, but a line ending a
   fraction of a pixel short of another is left disconnected and silently costs
   connectivity. A snap-then-node pass would be more robust.
+- **Datasets load every chip eagerly.** Measured at 27 ms and 1.7 MB per chip,
+  so one AOI (989 chips) costs 27 s and 1.6 GB resident — fine. Four AOIs would
+  be 6.6 GB, which is where a memory-mapped preprocessed cache starts to earn
+  its keep. Not before.
 - **Chips are not mosaicked.** Each is scored independently at roughly 300 m
   square, which is small enough that a single break moves APLS a lot. Stitching
   adjacent chips into larger tiles would give steadier per-tile numbers and
