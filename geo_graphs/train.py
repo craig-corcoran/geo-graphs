@@ -475,6 +475,81 @@ def evaluate_tile(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class AggregateReport:
+    """Per-stage quality across a set of tiles.
+
+    Reports a spread rather than a single mean. Chips are roughly 300 m square,
+    small enough that one severed road moves a tile's APLS a long way, so a mean
+    alone hides how variable the result is.
+
+    Attributes:
+        n_scored: Tiles that contributed to the numbers.
+        n_skipped: Tiles dropped for having no ground-truth roads at all, which
+            SpaceNet does ship and which score degenerately.
+        mask_iou: Mean pixel agreement.
+        apls_cleaned: Mean APLS of the final graph.
+        apls_median: Median APLS, which a single bad chip cannot drag.
+        ceiling_apls: Mean achievable APLS on these tiles.
+        fraction_of_ceiling: Mean per-tile share of the achievable score.
+        per_tile: Every individual report, in the order scored.
+    """
+
+    n_scored: int
+    n_skipped: int
+    mask_iou: float
+    apls_cleaned: float
+    apls_median: float
+    ceiling_apls: float
+    fraction_of_ceiling: float
+    per_tile: tuple[EvalReport, ...]
+
+
+def evaluate_tiles(
+    model: UNet,
+    source: data.TileSource,
+    sample_ids: Sequence[str],
+    threshold: float = 0.5,
+    device: str = "cpu",
+) -> AggregateReport:
+    """Score a model across many tiles and summarize the spread.
+
+    Args:
+        model: Trained network.
+        source: Where imagery and labels come from.
+        sample_ids: Tiles to score.
+        threshold: Probability above which a pixel counts as road.
+        device: Device string for inference.
+
+    Returns:
+        The aggregate, with every per-tile report retained.
+    """
+    reports, skipped = [], 0
+    for sample_id in sample_ids:
+        sample = source.load(sample_id)
+        if sample.truth.number_of_edges() == 0:
+            skipped += 1
+            continue
+        reports.append(evaluate_tile(model, sample, threshold=threshold, device=device))
+
+    if not reports:
+        return AggregateReport(0, skipped, 0.0, 0.0, 0.0, 0.0, 0.0, ())
+
+    def mean(attribute: str) -> float:
+        return float(np.mean([getattr(r, attribute) for r in reports]))
+
+    return AggregateReport(
+        n_scored=len(reports),
+        n_skipped=skipped,
+        mask_iou=mean("mask_iou"),
+        apls_cleaned=mean("apls_cleaned"),
+        apls_median=float(np.median([r.apls_cleaned for r in reports])),
+        ceiling_apls=mean("ceiling_apls"),
+        fraction_of_ceiling=mean("fraction_of_ceiling"),
+        per_tile=tuple(reports),
+    )
+
+
 def main() -> None:
     """Command line entry point."""
     import argparse
