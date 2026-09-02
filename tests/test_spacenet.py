@@ -27,11 +27,37 @@ WEST, NORTH = -115.167, 36.125
 DEGREES_PER_PX = 2.7e-06
 
 
-def write_chip(root: Path, image_id: str, size: int = 64, with_labels: bool = True):
-    """Write a GeoTIFF and matching geojson in SpaceNet's layout."""
-    images = root / spacenet.DEFAULT_PRODUCT
+#: The two real archive layouts: (image dir, image prefix, label dir, label
+#: prefix). The train tarballs and the sample tarball agree on nothing but the
+#: trailing img<N>, which is exactly what discovery pairs on.
+LAYOUTS = {
+    "train": (
+        "PS-RGB",
+        "SN3_roads_train_AOI_2_Vegas_PS-RGB",
+        "geojson_roads",
+        "SN3_roads_train_AOI_2_Vegas_geojson_roads",
+    ),
+    "sample": (
+        "RGB-PanSharpen",
+        "RGB-PanSharpen_AOI_2_Vegas",
+        "geojson/spacenetroads",
+        "spacenetroads_AOI_2_Vegas",
+    ),
+}
+
+
+def write_chip(
+    root: Path,
+    image_id: str,
+    size: int = 64,
+    with_labels: bool = True,
+    layout: str = "train",
+):
+    """Write a GeoTIFF and matching geojson in one of SpaceNet's layouts."""
+    image_dir, image_prefix, label_dir, label_prefix = LAYOUTS[layout]
+    images = root / image_dir
     images.mkdir(parents=True, exist_ok=True)
-    path = images / f"{spacenet.DEFAULT_PRODUCT}_{image_id}.tif"
+    path = images / f"{image_prefix}_{image_id}.tif"
 
     transform = from_origin(WEST, NORTH, DEGREES_PER_PX, DEGREES_PER_PX)
     pixels = np.full((3, size, size), 400, dtype=np.uint16)
@@ -53,10 +79,10 @@ def write_chip(root: Path, image_id: str, size: int = 64, with_labels: bool = Tr
     if not with_labels:
         return path
 
-    labels = root / "geojson" / "spacenetroads"
+    labels = root / label_dir
     labels.mkdir(parents=True, exist_ok=True)
     mid_lat = NORTH - (size / 2) * DEGREES_PER_PX
-    (labels / f"spacenetroads_{image_id}.geojson").write_text(
+    (labels / f"{label_prefix}_{image_id}.geojson").write_text(
         json.dumps(
             {
                 "type": "FeatureCollection",
@@ -79,33 +105,53 @@ def write_chip(root: Path, image_id: str, size: int = 64, with_labels: bool = Tr
     return path
 
 
-def test_find_chips_pairs_images_with_labels(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
-    write_chip(tmp_path, "AOI_2_Vegas_img2")
+@pytest.mark.parametrize("layout", sorted(LAYOUTS))
+def test_find_chips_pairs_images_with_labels(tmp_path, layout):
+    """Both archive layouts must work: they share only the img<N> token."""
+    write_chip(tmp_path, "img1", layout=layout)
+    write_chip(tmp_path, "img2", layout=layout)
 
     chips = spacenet.find_chips(tmp_path)
 
-    assert [c.image_id for c in chips] == ["AOI_2_Vegas_img1", "AOI_2_Vegas_img2"]
+    assert [c.image_id for c in chips] == ["img1", "img2"]
     assert all(c.image_path.exists() and c.labels_path.exists() for c in chips)
+
+
+def test_find_chips_orders_by_chip_number_not_lexically(tmp_path):
+    """img2 sorts before img10 by number and after it as a string."""
+    for name in ("img1", "img2", "img10"):
+        write_chip(tmp_path, name)
+
+    assert [c.image_id for c in spacenet.find_chips(tmp_path)] == [
+        "img1",
+        "img2",
+        "img10",
+    ]
+
+
+def test_find_chips_reports_a_missing_label_directory(tmp_path):
+    write_chip(tmp_path, "img1", with_labels=False)
+    with pytest.raises(FileNotFoundError, match="no label directory"):
+        spacenet.find_chips(tmp_path)
 
 
 def test_find_chips_skips_images_without_labels(tmp_path):
     """The public test split ships imagery only; listing must not blow up."""
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
-    write_chip(tmp_path, "AOI_2_Vegas_img2", with_labels=False)
+    write_chip(tmp_path, "img1")
+    write_chip(tmp_path, "img2", with_labels=False)
 
-    assert [c.image_id for c in spacenet.find_chips(tmp_path)] == ["AOI_2_Vegas_img1"]
+    assert [c.image_id for c in spacenet.find_chips(tmp_path)] == ["img1"]
 
 
 def test_find_chips_reports_a_missing_product_directory(tmp_path):
-    with pytest.raises(FileNotFoundError, match="RGB-PanSharpen"):
+    with pytest.raises(FileNotFoundError, match="no image product"):
         spacenet.find_chips(tmp_path)
 
 
 def test_load_reprojects_into_a_metric_crs(tmp_path):
     """SpaceNet ships EPSG:4326; pixels must become metres before scoring."""
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
-    sample = spacenet.SpaceNetTileSource(tmp_path).load("AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1")
+    sample = spacenet.SpaceNetTileSource(tmp_path).load("img1")
 
     assert not sample.tile.crs.is_geographic
     assert sample.tile.resolution == 1.0
@@ -113,11 +159,9 @@ def test_load_reprojects_into_a_metric_crs(tmp_path):
 
 
 def test_resolution_is_a_real_parameter(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
-    fine = spacenet.SpaceNetTileSource(tmp_path, resolution=0.5).load("AOI_2_Vegas_img1")
-    coarse = spacenet.SpaceNetTileSource(tmp_path, resolution=2.0).load(
-        "AOI_2_Vegas_img1"
-    )
+    write_chip(tmp_path, "img1")
+    fine = spacenet.SpaceNetTileSource(tmp_path, resolution=0.5).load("img1")
+    coarse = spacenet.SpaceNetTileSource(tmp_path, resolution=2.0).load("img1")
 
     assert fine.tile.resolution == 0.5
     assert fine.mask.shape[0] > coarse.mask.shape[0]
@@ -125,8 +169,8 @@ def test_resolution_is_a_real_parameter(tmp_path):
 
 def test_labels_land_on_the_road_in_the_imagery(tmp_path):
     """The alignment check: a mask offset by a reprojection slip would fail."""
-    write_chip(tmp_path, "AOI_2_Vegas_img1", size=128)
-    sample = spacenet.SpaceNetTileSource(tmp_path).load("AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1", size=128)
+    sample = spacenet.SpaceNetTileSource(tmp_path).load("img1")
 
     assert sample.mask.any()
     grey = sample.image.mean(axis=-1)
@@ -134,8 +178,8 @@ def test_labels_land_on_the_road_in_the_imagery(tmp_path):
 
 
 def test_labels_become_a_graph_in_pixel_coordinates(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1", size=128)
-    sample = spacenet.SpaceNetTileSource(tmp_path).load("AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1", size=128)
+    sample = spacenet.SpaceNetTileSource(tmp_path).load("img1")
 
     assert sample.truth.number_of_edges() == 1
     assert geograph.total_length(sample.truth) > 10
@@ -146,23 +190,23 @@ def test_labels_become_a_graph_in_pixel_coordinates(tmp_path):
 
 
 def test_load_rejects_an_unknown_chip(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1")
     with pytest.raises(KeyError, match="unknown chip"):
-        spacenet.SpaceNetTileSource(tmp_path).load("AOI_2_Vegas_img999")
+        spacenet.SpaceNetTileSource(tmp_path).load("img999")
 
 
 def test_source_satisfies_the_protocol(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1")
     assert isinstance(spacenet.SpaceNetTileSource(tmp_path), data.TileSource)
 
 
 def test_register_adds_a_factory(tmp_path):
-    write_chip(tmp_path, "AOI_2_Vegas_img1")
+    write_chip(tmp_path, "img1")
     registry: dict = {}
     spacenet.register(registry)
 
     source = registry["spacenet"](aoi_root=tmp_path)
-    assert source.ids() == ("AOI_2_Vegas_img1",)
+    assert source.ids() == ("img1",)
 
 
 def test_geographic_tiles_are_refused_outright():
@@ -205,10 +249,10 @@ def test_labels_are_noded_at_crossings(tmp_path):
     components and an achievable APLS of 0.10; noded it is 3 components and
     0.98. OSM does this for us, which is why the OSM path never needed it.
     """
-    images = tmp_path / spacenet.DEFAULT_PRODUCT
+    images = tmp_path / spacenet.PRODUCT_DIRS[0]
     images.mkdir(parents=True)
     with rasterio.open(
-        images / f"{spacenet.DEFAULT_PRODUCT}_AOI_2_Vegas_imgX.tif",
+        images / f"{spacenet.PRODUCT_DIRS[0]}_img99.tif",
         "w",
         driver="GTiff",
         height=128,
@@ -225,7 +269,7 @@ def test_labels_are_noded_at_crossings(tmp_path):
     vertical = [[WEST + 64 * d, NORTH - 10 * d], [WEST + 64 * d, NORTH - 118 * d]]
     labels = tmp_path / "geojson" / "spacenetroads"
     labels.mkdir(parents=True)
-    (labels / "spacenetroads_AOI_2_Vegas_imgX.geojson").write_text(
+    (labels / "spacenetroads_img99.geojson").write_text(
         json.dumps(
             {
                 "type": "FeatureCollection",
@@ -241,7 +285,7 @@ def test_labels_are_noded_at_crossings(tmp_path):
         )
     )
 
-    truth = spacenet.SpaceNetTileSource(tmp_path).load("AOI_2_Vegas_imgX").truth
+    truth = spacenet.SpaceNetTileSource(tmp_path).load("img99").truth
 
     assert nx.number_connected_components(truth) == 1
     assert truth.number_of_edges() == 4  # both roads split at the crossing

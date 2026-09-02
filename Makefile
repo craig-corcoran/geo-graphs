@@ -18,8 +18,17 @@ TRAIN_ARGS ?=
 TESTS   ?= tests
 SRC     ?= $(PKG) $(TESTS)
 
+# SpaceNet Roads. The bucket is public over plain HTTPS: no credentials, no
+# AWS CLI. Only RGB-PanSharpen is extracted -- it is 24% of an AOI by size, and
+# the 8-band products are 64% we have no model for.
+DATA_DIR          ?= data
+SPACENET_BUCKET   ?= https://spacenet-dataset.s3.amazonaws.com/spacenet/SN3_roads/tarballs
+SPACENET_TARBALL  ?= SN3_roads_train_AOI_2_Vegas.tar.gz
+SPACENET_PRODUCT  ?= PS-RGB
+SPACENET_LABELS   ?= geojson_roads
+
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -65,3 +74,17 @@ train:  ## Train the segmentation model and score it per stage (hits the network
 
 examples:  ## Execute the walkthrough notebook to prove it still runs (hits the network)
 	$(UV) run jupyter execute $(EXAMPLES)/*.ipynb
+
+fetch-spacenet:  ## Download a SpaceNet tarball into DATA_DIR (large; resumable)
+	@mkdir -p $(DATA_DIR)
+	curl -L -C - --retry 5 --retry-delay 5 \
+	  -o $(DATA_DIR)/$(SPACENET_TARBALL) \
+	  $(SPACENET_BUCKET)/$(SPACENET_TARBALL)
+
+extract-spacenet:  ## Unpack only SPACENET_PRODUCT and the labels (writes to DATA_DIR)
+	tar xzf $(DATA_DIR)/$(SPACENET_TARBALL) -C $(DATA_DIR) \
+	  '*/$(SPACENET_PRODUCT)/*' '*/$(SPACENET_LABELS)/*'
+
+spacenet-usage:  ## Report disk used by downloads and extractions
+	@du -sh $(DATA_DIR)/* 2>/dev/null || echo "  nothing in $(DATA_DIR)"
+	@df -h $(DATA_DIR) | tail -1

@@ -16,6 +16,7 @@ Non-planarity is.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,9 +34,18 @@ from .tiles import Tile
 
 WGS84 = "EPSG:4326"
 
-#: Image products shipped per AOI. RGB-PanSharpen is the three-band visible
-#: product; the others carry more spectral bands than a plain U-Net wants.
-DEFAULT_PRODUCT = "RGB-PanSharpen"
+#: Directories holding the three-band visible product, newest naming first.
+#: The train archives call it ``PS-RGB``; the sample archive calls the same
+#: thing ``RGB-PanSharpen``. The other products (``MS``, ``PS-MS``, ``PAN``)
+#: carry more spectral bands than a plain U-Net wants, and ``PS-MS`` alone is
+#: about two thirds of an AOI by size.
+PRODUCT_DIRS = ("PS-RGB", "RGB-PanSharpen")
+
+#: Directories holding road labels, in the same two namings.
+LABEL_DIRS = ("geojson_roads", "geojson/spacenetroads")
+
+#: Trailing token identifying a chip within an AOI, e.g. ``img1454``.
+_CHIP_KEY = re.compile(r"(img\d+)$")
 
 #: Shortest noded segment worth keeping, in pixels. Below this a piece is a
 #: rounding artifact of the intersection, not a road.
@@ -47,7 +57,7 @@ class Chip:
     """One SpaceNet image and its matching road labels.
 
     Attributes:
-        image_id: SpaceNet identifier, e.g. ``AOI_2_Vegas_img1454``.
+        image_id: Chip token within its AOI, e.g. ``img1454``.
         image_path: GeoTIFF path.
         labels_path: Road geojson path.
     """
@@ -57,33 +67,64 @@ class Chip:
     labels_path: Path
 
 
-def find_chips(aoi_root: Path, product: str = DEFAULT_PRODUCT) -> tuple[Chip, ...]:
+def _chip_key(path: Path) -> str | None:
+    """Trailing ``img<N>`` token, the only id the two layouts agree on."""
+    found = _CHIP_KEY.search(path.stem)
+    return found.group(1) if found else None
+
+
+def _first_existing(root: Path, candidates: tuple[str, ...]) -> Path | None:
+    """First candidate subdirectory that exists under ``root``."""
+    return next((root / name for name in candidates if (root / name).is_dir()), None)
+
+
+def find_chips(aoi_root: Path, product: str | None = None) -> tuple[Chip, ...]:
     """Pair every image in an AOI directory with its label file.
 
+    The train archives and the sample archive disagree about directory names
+    and about every filename prefix, agreeing only on a trailing ``img<N>``.
+    Pairing on that token handles both without a per-layout branch.
+
     Args:
-        aoi_root: An ``AOI_*_Roads_Sample`` or extracted AOI directory.
-        product: Image product subdirectory to read.
+        aoi_root: An extracted AOI directory.
+        product: Image subdirectory to read. Defaults to the first of
+            :data:`PRODUCT_DIRS` that exists.
 
     Returns:
-        Chips with both files present, ordered by id. Images whose labels are
-        missing are skipped rather than failing the whole listing, because the
-        public test split ships imagery without labels.
+        Chips with both files present, ordered by chip number. Images whose
+        labels are missing are skipped rather than failing the whole listing,
+        because the public test split ships imagery without labels.
 
     Raises:
-        FileNotFoundError: If the product directory does not exist.
+        FileNotFoundError: If no image or label directory can be found.
     """
-    images = aoi_root / product
-    if not images.is_dir():
-        raise FileNotFoundError(f"no {product} directory under {aoi_root}")
+    images = (
+        aoi_root / product
+        if product is not None
+        else _first_existing(aoi_root, PRODUCT_DIRS)
+    )
+    if images is None or not images.is_dir():
+        raise FileNotFoundError(
+            f"no image product under {aoi_root}; looked for {list(PRODUCT_DIRS)}"
+        )
 
-    labels = aoi_root / "geojson" / "spacenetroads"
-    chips = []
-    for path in sorted(images.glob(f"{product}_*.tif")):
-        image_id = path.stem.removeprefix(f"{product}_")
-        label_path = labels / f"spacenetroads_{image_id}.geojson"
-        if label_path.exists():
-            chips.append(Chip(image_id=image_id, image_path=path, labels_path=label_path))
-    return tuple(chips)
+    labels = _first_existing(aoi_root, LABEL_DIRS)
+    if labels is None:
+        raise FileNotFoundError(
+            f"no label directory under {aoi_root}; looked for {list(LABEL_DIRS)}"
+        )
+
+    by_key = {
+        key: path
+        for path in labels.glob("*.geojson")
+        if (key := _chip_key(path)) is not None
+    }
+    chips = [
+        Chip(image_id=key, image_path=path, labels_path=by_key[key])
+        for path in images.glob("*.tif")
+        if (key := _chip_key(path)) is not None and key in by_key
+    ]
+    return tuple(sorted(chips, key=lambda c: int(c.image_id.removeprefix("img"))))
 
 
 def _reproject_to_utm(path: Path, resolution: float) -> tuple[np.ndarray, Tile]:
@@ -192,14 +233,14 @@ class SpaceNetTileSource:
         self,
         aoi_root: Path | str,
         resolution: float = 1.0,
-        product: str = DEFAULT_PRODUCT,
+        product: str | None = None,
         half_width_px: int = 2,
     ) -> None:
         """
         Args:
             aoi_root: Directory holding the image product and geojson folders.
             resolution: Metres per pixel to reproject to.
-            product: Image product subdirectory.
+            product: Image subdirectory, or ``None`` to auto-detect.
             half_width_px: Road half-width used to rasterize the label mask.
         """
         self.aoi_root = Path(aoi_root)
@@ -261,5 +302,9 @@ def aoi_roots(sample_root: Path | str) -> tuple[Path, ...]:
     """
     root = Path(sample_root)
     return tuple(
-        sorted(p for p in root.iterdir() if (p / "geojson" / "spacenetroads").is_dir())
+        sorted(
+            p
+            for p in root.iterdir()
+            if p.is_dir() and _first_existing(p, LABEL_DIRS) is not None
+        )
     )
