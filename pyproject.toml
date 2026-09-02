@@ -1,0 +1,60 @@
+[project]
+name = "geo-graphs"
+version = "0.1.0"
+description = "Road graph extraction from overhead imagery"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7.3",
+    "networkx>=3.6.1",
+    "numpy>=2.5.2",
+    "osmnx>=2.1.1",
+    "pyproj>=3.7.2",
+    "scikit-image>=0.26.0",
+    "scipy>=1.18.1",
+    "shapely>=2.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.1",
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+    "utm>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+addopts = "-m 'not network'"
+markers = [
+    "network: hits the OpenStreetMap API; run with -m network",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py313"
+# Vendored byte-for-byte from CosmiQ/apls; formatting them would break the
+# faithfulness check that makes them a valid independent oracle.
+extend-exclude = [
+    "tests/reference/apls_reference.py",
+    "tests/reference/apls_utils.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pyright]
+include = ["geo_graphs", "tests"]
+exclude = [
+    "tests/reference/apls_reference.py",
+    "tests/reference/apls_utils.py",
+]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
