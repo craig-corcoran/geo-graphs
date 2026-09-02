@@ -309,3 +309,69 @@ model evaluated on flat downtown tiles and one evaluated across an interchange
 are not being held to the same standard. Second, this is the failure mode the
 "don't let a coarse-grained metric carry a fine-grained claim" rule describes:
 the count was the coarse measure, and it pointed the wrong way.
+
+---
+
+## 2026-09-01 — Training loop built before the imagery
+
+**Change under test.** Built the segmentation half — `data`, `model`, `train` —
+against fabricated imagery, rather than waiting on a SpaceNet download. The bet
+is the same one that paid off for the harness: when the real data lands, only
+one thing is new, instead of data and PyTorch and evaluation all at once.
+
+`TileSource` is the seam. `SyntheticTileSource` pairs genuine OSM labels with an
+invented image; a SpaceNet source drops in behind the same Protocol and changes
+one config key. Crop sampling is pure numpy and returns *windows* rather than
+pixels, so a dataset is described by reproducible specs and materialized on
+demand.
+
+**The imagery is fabricated, so no number here is a result.** The image is
+derived from the label. It is built to be non-trivially separable — blurred road
+edges, textured background, road-coloured rectangular distractors, per-channel
+tint, additive noise — which is enough to catch a channel-order slip or a broken
+normalization, and nothing more. A test asserts no single global threshold
+recovers the mask, so the fake cannot silently degrade into the identity task.
+
+### Sanity checks, all passing
+
+| Check | Expected | Got |
+|---|---|---|
+| BCE at zero logits | ln 2 = 0.6931 | 0.6931 |
+| Dice, perfect prediction | 0 | 0.0000 |
+| Dice, predicting nothing | ~1 | 0.9984 |
+| Parameters with no gradient | none | none |
+| Overfit 4 crops, 600 steps @ lr 1e-2 | → 0 | 0.0003 |
+
+The overfit-one-batch diagnostic is a first-class function and a test, not a
+scratch script. It initially looked like a failure — loss stalled at 0.31 — which
+turned out to be 120 steps being too few rather than anything wrong. Worth
+recording, because "the loop is broken" and "the schedule is too short" look
+identical for the first hundred steps.
+
+### End to end
+
+The whole chain runs: train → full-tile inference → skeletonize → clean → APLS.
+On a held-out 512 m tile after 6 epochs:
+
+| Stage | Score |
+|---|---|
+| pixel IoU | 0.9522 |
+| APLS, raw traced graph | 0.9608 |
+| APLS, after cleanup | 0.9715 |
+| APLS ceiling, perfect mask | 0.9715 |
+| fraction of ceiling | 1.000 |
+
+Again: **these are plumbing numbers, not quality numbers.** The CLI logs a
+warning to that effect whenever the source is synthetic.
+
+**Per-stage metrics now exist**, which closes a backlog item. `EvalReport`
+separates pixel agreement, the raw traced graph and the cleaned graph, so a
+cleanup regression can no longer masquerade as a skeleton regression. The row
+that matters is `fraction_of_ceiling`: the ceiling is tile-dependent (0.96
+downtown, 0.88 across the interchange), so a raw model APLS compared against a
+global constant would rate a good model on hard tiles as a bad one.
+
+**What it motivates.** The remaining Stage 1 work is genuinely just data: fetch
+SpaceNet Roads, add a `SpaceNetTileSource`, register it. After that the first
+real question is threshold selection — `predict_mask` takes one, and section 6 of
+the walkthrough is the argument for tuning it on APLS rather than IoU.

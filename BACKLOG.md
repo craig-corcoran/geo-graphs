@@ -36,10 +36,15 @@ proposing new architectural work.
 
 ## Data
 
-- **No imagery yet.** Ground truth comes from OSM directly, which is what let
-  Stage 1 proceed without a download. SpaceNet Roads (AWS S3) is still needed
-  before any segmentation model can train. The Las Vegas dev tile is inside
-  SpaceNet AOI 2 so the tuning transfers.
+- **No imagery yet — the last thing blocking Stage 1.** Ground truth comes from
+  OSM directly, and `data.SyntheticTileSource` fabricates imagery so the model
+  and training loop could be built and tested. Remaining work is a
+  `SpaceNetTileSource` (AWS S3) registered under `TILE_SOURCE_REGISTRY`; nothing
+  downstream changes. The Las Vegas dev tile is inside SpaceNet AOI 2 so the
+  tuning transfers.
+- **Threshold is untuned.** `model.predict_mask` takes one and it is a real
+  hyperparameter trading the two APLS directions against each other. Tune it on
+  APLS, not IoU, once a model is trained on real imagery.
 
 ## Project stages (from the plan)
 
@@ -65,17 +70,17 @@ missing offline suites turned up two real geometry bugs, both since fixed; see
   rule wants both as registry stages. Deferred because there are only two
   sampling rules and one cleanup pipeline today; the abstraction earns its keep
   once a third arrives, which Stage 2 will likely force.
-- **No frozen-checkpoint rerun entry point.** `roundtrip.run()` refetches OSM
-  and re-rasterizes on every call, so tuning cleanup pays for ingestion and
-  skeletonization each time. osmnx's `./cache` softens this but does not satisfy
-  the rule. Wants graph save/load plus an entry point that scores a stored
-  truth/proposal pair.
+- **No frozen-checkpoint rerun entry point** (partly addressed). `train()` and
+  `overfit_one_batch()` accept pre-built datasets, so a sweep over model settings
+  pays tile ingestion once. `roundtrip.run()` still refetches and re-rasterizes
+  every call, and there is still no graph save/load for scoring a stored
+  truth/proposal pair without recomputing.
 - **No content-hashed run identity.** Nothing implements
   `timestamp + SHA-256(config + inputs)`. Matters once sweeps start producing
   numbers that need to be told apart.
-- **Quality metrics are not separated by stage.** We report mask IoU and final
-  APLS, so a cleanup regression currently looks like a skeleton regression.
-  Wants APLS scored on the raw traced graph as well as the cleaned one.
+- ~~**Quality metrics are not separated by stage.**~~ Done 2026-09-01.
+  `train.EvalReport` reports pixel IoU, APLS on the raw traced graph, APLS after
+  cleanup, and the tile's own ceiling, plus the fraction of it captured.
 - **`metrics._directional` accumulates in a Python double loop.** Rectangular
   numeric work over path-length arrays; vectorizes cleanly. ~15k iterations on
   default sampling, ~94k on uniform. Style rule prefers vectorized; also a

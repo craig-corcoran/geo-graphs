@@ -54,11 +54,23 @@ takes `TILE_LAT` / `TILE_LON`.
 | `skeleton` | Mask to graph, by morphological thinning and tracing. |
 | `cleanup` | Simplify, prune spurs, snap junction clusters. |
 | `metrics` | IoU and APLS. |
-| `roundtrip` | End-to-end scoring entry point. |
+| `roundtrip` | Measures the pipeline's own ceiling on a tile. |
+| `data` | Tile sources, synthetic imagery, crop sampling. |
+| `model` | U-Net, and the BCE + soft Dice loss. |
+| `train` | Training loop, checkpoints, per-stage evaluation. |
 
 `raster` builds the segmentation model's training targets; `skeleton` + `cleanup`
-are the inference-time decoder that runs on its predictions. Only the model
-itself is missing.
+are the inference-time decoder that runs on its predictions.
+
+The model trains today against **fabricated** imagery (`data.SyntheticTileSource`),
+which exists so the loop and the evaluation path could be built before any
+download. Those runs prove plumbing, never quality. Real imagery arrives as a
+second `TileSource` registered in `TILE_SOURCE_REGISTRY`; nothing downstream
+changes.
+
+```bash
+make train
+```
 
 ## On the metric
 
