@@ -7,7 +7,8 @@ PYTEST  ?= $(UV) run pytest
 RUFF    ?= $(UV) run ruff
 PYRIGHT ?= $(UV) run pyright
 
-PKG     ?= geo_graphs
+PKG      ?= geo_graphs
+EXAMPLES ?= examples
 
 TILE_LAT  ?= 36.1699
 TILE_LON  ?= -115.1398
@@ -17,7 +18,7 @@ TESTS   ?= tests
 SRC     ?= $(PKG) $(TESTS)
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -57,3 +58,6 @@ roundtrip:  ## Score the OSM->mask->graph round trip on one tile (hits the netwo
 	$(UV) run python -m $(PKG).roundtrip \
 	  --lat $(TILE_LAT) --lon $(TILE_LON) --size $(TILE_SIZE) \
 	  --resolution $(TILE_RES) $(if $(OUT),--out $(OUT),)
+
+examples:  ## Execute the walkthrough notebook to prove it still runs (hits the network)
+	$(UV) run jupyter execute $(EXAMPLES)/*.ipynb

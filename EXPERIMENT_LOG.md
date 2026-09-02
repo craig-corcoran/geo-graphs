@@ -267,3 +267,45 @@ never ran, and both were invisible in aggregate numbers — length was off by 1%
 APLS by 0.001. Neither would have been caught by watching the headline score,
 which is the trap the "don't let a coarse-grained metric carry a fine-grained
 claim" rule warns about.
+
+---
+
+## 2026-09-01 — Crossing *density*, not count, tracks the ceiling
+
+**Change under test.** Wrote a walkthrough notebook (`examples/walkthrough.ipynb`)
+and tried to have it demonstrate the non-planarity result rather than assert it,
+by comparing tiles of different sizes around the same centre.
+
+**What was measured.** Perfect-mask round trip at three tile sizes.
+
+| tile | km road | crossings | per km | APLS | prop→gt |
+|---|---|---|---|---|---|
+| 512 m | 4.5 | 0 | 0.00 | 0.9624 | 0.9612 |
+| 1024 m | 19.4 | 20 | 1.03 | 0.8764 | 0.8231 |
+| 2048 m | 71.3 | 40 | 0.56 | 0.9487 | 0.9278 |
+
+**The naive reading is wrong.** The 2048 m tile has *twice* the crossings of the
+1024 m tile and scores *higher* — 0.9487 against 0.8764. Raw crossing count does
+not predict the ceiling, and taken alone it would have looked like evidence
+against the non-planarity explanation from the 2026-08-23 entry.
+
+**Normalizing fixes it.** Crossings per km orders the three tiles exactly:
+0.00 → 0.9624, 0.56 → 0.9487, 1.03 → 0.8764. The mechanism is straightforward
+once stated — APLS averages over route pairs, so twenty crossings spread across
+71 km of network corrupt a much smaller share of routes than twenty concentrated
+in 19 km. The loss also lands in `prop→gt` in every case, which is the specific
+signature an invented junction should leave.
+
+**Strength of the claim.** Three tiles is three points, and tile size varies more
+than crossing density alone; this is corroboration, not proof. The independent
+evidence remains the width/resolution sweep in the 2026-08-23 (later) entry,
+which no amount of thinning moved. Also worth noting the ceiling sits below 1.0
+even at zero crossings — rasterizing and thinning lose a little geometry
+regardless, through junction-blob collapse and coordinate quantization.
+
+**What it motivates.** Two things. First, when Stage 1 model numbers arrive,
+compare them against the ceiling *for that tile*, not a global constant — a
+model evaluated on flat downtown tiles and one evaluated across an interchange
+are not being held to the same standard. Second, this is the failure mode the
+"don't let a coarse-grained metric carry a fine-grained claim" rule describes:
+the count was the coarse measure, and it pointed the wrong way.

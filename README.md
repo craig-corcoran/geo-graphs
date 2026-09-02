@@ -28,6 +28,14 @@ it. See `EXPERIMENT_LOG.md`.
 make sync
 ```
 
+Then read [`examples/walkthrough.ipynb`](examples/walkthrough.ipynb) — it walks
+the whole pipeline end to end, frames each module by the job it does during
+training and inference, and shows where the model slots in.
+
+```bash
+make examples
+```
+
 ```bash
 make check
 ```
@@ -47,6 +55,10 @@ takes `TILE_LAT` / `TILE_LON`.
 | `cleanup` | Simplify, prune spurs, snap junction clusters. |
 | `metrics` | IoU and APLS. |
 | `roundtrip` | End-to-end scoring entry point. |
+
+`raster` builds the segmentation model's training targets; `skeleton` + `cleanup`
+are the inference-time decoder that runs on its predictions. Only the model
+itself is missing.
 
 ## On the metric
 
