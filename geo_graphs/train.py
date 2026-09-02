@@ -12,6 +12,7 @@ and the shapes line up.
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -21,6 +22,22 @@ from torch.utils.data import DataLoader, Dataset
 
 from . import cleanup, data, metrics, skeleton
 from .model import UNet, predict_mask, segmentation_loss
+
+#: Which validation number decides the best epoch.
+#:
+#: ``val_loss`` and ``val_iou`` are pixel measures and cost nothing extra.
+#: ``val_apls`` is the metric the project actually cares about, and selecting
+#: on it costs a graph extraction per epoch — but selecting a checkpoint on a
+#: pixel score is precisely the mistake this project exists to demonstrate, so
+#: the option is here to be measured rather than assumed away.
+SelectOn = Literal["val_loss", "val_iou", "val_apls"]
+
+#: Direction of improvement for each criterion.
+_HIGHER_IS_BETTER: dict[str, bool] = {
+    "val_loss": False,
+    "val_iou": True,
+    "val_apls": True,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +63,11 @@ class TrainConfig:
         source: Registry key naming the tile source.
         seed: Seeds crop sampling and weight initialization.
         device: ``"auto"``, or an explicit torch device string.
+        select_on: Which validation number picks the returned weights.
+        patience: Epochs without improvement before stopping early. ``None``
+            runs every epoch.
+        apls_eval_tiles: Validation tiles scored end to end each epoch. Zero
+            skips it, which is required unless ``select_on`` is ``val_apls``.
     """
 
     train_ids: tuple[str, ...] = ("tile_0", "tile_2")
@@ -62,6 +84,9 @@ class TrainConfig:
     source: str = "synthetic"
     seed: int = 0
     device: str = "auto"
+    select_on: SelectOn = "val_loss"
+    patience: int | None = 5
+    apls_eval_tiles: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,12 +98,15 @@ class EpochMetrics:
         train_loss: Mean training loss.
         val_loss: Mean validation loss.
         val_iou: Pixel IoU on validation crops, at a 0.5 threshold.
+        val_apls: APLS over a few validation tiles, or ``None`` when not
+            computed. Costs a graph extraction per tile, so it is opt-in.
     """
 
     epoch: int
     train_loss: float
     val_loss: float
     val_iou: float
+    val_apls: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +114,19 @@ class TrainResult:
     """A finished run.
 
     Attributes:
-        model: The trained network, on CPU.
+        model: The trained network, on CPU, holding the *best* epoch's weights
+            rather than the last.
         history: Per-epoch metrics in order.
         checkpoint: Where weights were written, if anywhere.
+        best_epoch: Epoch the returned weights came from.
+        stopped_early: Whether patience ran out before the epoch budget did.
     """
 
     model: UNet
     history: tuple[EpochMetrics, ...] = field(default_factory=tuple)
     checkpoint: Path | None = None
+    best_epoch: int = -1
+    stopped_early: bool = False
 
 
 class CropDataset(Dataset):
@@ -245,6 +278,30 @@ def _run_epoch(
     return float(np.mean(losses)) if losses else 0.0, iou
 
 
+def _epoch_apls(
+    model: UNet,
+    source: data.TileSource | None,
+    config: TrainConfig,
+    device: torch.device,
+) -> float | None:
+    """Mean APLS over a few validation tiles, or ``None`` when not requested.
+
+    Costs a full graph extraction per tile, so it is opt-in rather than always
+    on. It exists because selecting a checkpoint on a pixel score is the exact
+    mistake this project measures, and the alternative should be available to
+    compare against rather than argued about.
+    """
+    if config.apls_eval_tiles <= 0 or source is None:
+        return None
+    report = evaluate_tiles(
+        model,
+        source,
+        config.val_ids[: config.apls_eval_tiles],
+        device=str(device),
+    )
+    return report.apls_cleaned if report.n_scored else None
+
+
 def train(
     config: TrainConfig,
     source: data.TileSource | None = None,
@@ -288,7 +345,14 @@ def train(
     model = UNet(in_channels=3, widths=config.widths).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
 
-    history = []
+    history: list[EpochMetrics] = []
+    best_score: float | None = None
+    best_state: dict | None = None
+    best_epoch = -1
+    stale_epochs = 0
+    stopped_early = False
+    higher_is_better = _HIGHER_IS_BETTER[config.select_on]
+
     for epoch in range(config.epochs):
         train_loss, _ = _run_epoch(
             model, train_loader, device, config.dice_weight, optimizer
@@ -296,17 +360,61 @@ def train(
         val_loss, val_iou = _run_epoch(
             model, val_loader, device, config.dice_weight, None
         )
-        history.append(
-            EpochMetrics(
-                epoch=epoch, train_loss=train_loss, val_loss=val_loss, val_iou=val_iou
-            )
+        val_apls = _epoch_apls(model, source, config, device)
+
+        measured = EpochMetrics(
+            epoch=epoch,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            val_iou=val_iou,
+            val_apls=val_apls,
         )
-        logger.info(
+        history.append(measured)
+
+        line = (
             f"epoch {epoch:3d}  train {train_loss:.4f}  "
             f"val {val_loss:.4f}  val IoU {val_iou:.4f}"
         )
+        if val_apls is not None:
+            line += f"  val APLS {val_apls:.4f}"
+
+        score = getattr(measured, config.select_on)
+        if score is None:
+            raise ValueError(
+                f"select_on={config.select_on!r} needs apls_eval_tiles > 0 and a source"
+            )
+
+        improved = best_score is None or (
+            score > best_score if higher_is_better else score < best_score
+        )
+        if improved:
+            best_score, best_epoch, stale_epochs = score, epoch, 0
+            best_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+            line += "  *"
+        else:
+            stale_epochs += 1
+
+        logger.info(line)
+
+        if config.patience is not None and stale_epochs >= config.patience:
+            stopped_early = True
+            logger.info(
+                f"no improvement in {config.select_on} for {stale_epochs} epochs; "
+                f"stopping at epoch {epoch}"
+            )
+            break
 
     model = model.to("cpu")
+    if best_state is not None:
+        # Keep the best epoch, not the last. Validation loss here bottoms well
+        # before the epoch budget runs out, so returning the final weights hands
+        # back a measurably worse model and makes every later comparison lie.
+        model.load_state_dict(best_state)
+        logger.info(f"restored epoch {best_epoch} ({config.select_on} {best_score:.4f})")
+
     if checkpoint is not None:
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -314,7 +422,13 @@ def train(
         )
         logger.info(f"wrote {checkpoint}")
 
-    return TrainResult(model=model, history=tuple(history), checkpoint=checkpoint)
+    return TrainResult(
+        model=model,
+        history=tuple(history),
+        checkpoint=checkpoint,
+        best_epoch=best_epoch,
+        stopped_early=stopped_early,
+    )
 
 
 def overfit_one_batch(
@@ -628,6 +742,24 @@ def main() -> None:
         "the slow part, and 40 already gives a stable spread",
     )
     parser.add_argument("--seed", type=int, default=defaults.seed)
+    parser.add_argument(
+        "--select-on",
+        choices=["val_loss", "val_iou", "val_apls"],
+        default=defaults.select_on,
+        help="which validation number picks the returned weights",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=defaults.patience,
+        help="epochs without improvement before stopping; 0 disables",
+    )
+    parser.add_argument(
+        "--apls-eval-tiles",
+        type=int,
+        default=defaults.apls_eval_tiles,
+        help="tiles scored end to end each epoch; required for --select-on val_apls",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
@@ -649,12 +781,19 @@ def main() -> None:
         device=args.device,
         source=source_key,
         seed=args.seed,
+        select_on=args.select_on,
+        patience=args.patience or None,
+        apls_eval_tiles=args.apls_eval_tiles,
     )
     result = train(config, source=source, checkpoint=args.checkpoint)
 
     scored = config.val_ids[: args.max_eval_tiles]
     report = evaluate_tiles(result.model, source, scored)
 
+    logger.info(
+        f"best epoch {result.best_epoch} of {len(result.history)}"
+        f"{' (stopped early)' if result.stopped_early else ''}"
+    )
     logger.info(f"scored {report.n_scored} tiles ({report.n_skipped} had no roads)")
     logger.info(f"mask IoU            {report.mask_iou:.4f}")
     logger.info(f"APLS mean           {report.apls_cleaned:.4f}")
@@ -674,6 +813,8 @@ def main() -> None:
             json.dumps(
                 {
                     "config": asdict(config),
+                    "best_epoch": result.best_epoch,
+                    "stopped_early": result.stopped_early,
                     "history": [asdict(m) for m in result.history],
                     "eval": {
                         **{k: v for k, v in asdict(report).items() if k != "per_tile"},

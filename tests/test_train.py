@@ -248,3 +248,81 @@ def test_split_ids_always_holds_out_at_least_one():
     train_ids, val_ids = train.split_ids(("a", "b", "c"), val_fraction=0.01, seed=0)
     assert len(val_ids) == 1
     assert len(train_ids) == 2
+
+
+def _decreasing_then_rising(config, monkeypatch, losses):
+    """Drive train() with a scripted validation curve."""
+    calls = iter(losses)
+
+    def fake_epoch(model, loader, device, dice_weight, optimizer):
+        if optimizer is not None:
+            return 0.1, 0.5
+        return next(calls), 0.5
+
+    monkeypatch.setattr(train, "_run_epoch", fake_epoch)
+    return train.train(config, datasets=(tiny_dataset(4), tiny_dataset(4)))
+
+
+def test_returns_the_best_epoch_not_the_last(monkeypatch):
+    """Validation loss bottoms before the epoch budget does.
+
+    Returning the final weights hands back a measurably worse model and makes
+    every later comparison lie about what changed.
+    """
+    config = train.TrainConfig(**TINY, epochs=5, patience=None, seed=0)
+    result = _decreasing_then_rising(config, monkeypatch, [0.5, 0.3, 0.2, 0.4, 0.6])
+    assert result.best_epoch == 2
+    assert not result.stopped_early
+
+
+def test_early_stopping_fires_after_patience_epochs(monkeypatch):
+    config = train.TrainConfig(**TINY, epochs=20, patience=2, seed=0)
+    result = _decreasing_then_rising(config, monkeypatch, [0.5, 0.3, 0.4, 0.5, 0.6, 0.7])
+    assert result.best_epoch == 1
+    assert result.stopped_early
+    assert len(result.history) == 4  # improved, then two stale epochs
+
+
+def test_patience_none_runs_every_epoch(monkeypatch):
+    config = train.TrainConfig(**TINY, epochs=4, patience=None, seed=0)
+    result = _decreasing_then_rising(config, monkeypatch, [0.5, 0.6, 0.7, 0.8])
+    assert len(result.history) == 4
+    assert not result.stopped_early
+
+
+def test_selecting_on_iou_prefers_higher(monkeypatch):
+    """Loss is minimized, IoU maximized; the direction must follow the choice."""
+    ious = iter([0.2, 0.9, 0.4])
+
+    def fake_epoch(model, loader, device, dice_weight, optimizer):
+        return (0.1, 0.5) if optimizer is not None else (0.1, next(ious))
+
+    monkeypatch.setattr(train, "_run_epoch", fake_epoch)
+    config = train.TrainConfig(**TINY, epochs=3, patience=None, select_on="val_iou")
+    assert (
+        train.train(config, datasets=(tiny_dataset(4), tiny_dataset(4))).best_epoch == 1
+    )
+
+
+def test_selecting_on_apls_without_tiles_is_an_error():
+    config = train.TrainConfig(**TINY, epochs=1, select_on="val_apls", apls_eval_tiles=0)
+    with pytest.raises(ValueError, match="apls_eval_tiles"):
+        train.train(config, datasets=(tiny_dataset(4), tiny_dataset(4)))
+
+
+def test_restored_weights_are_the_ones_checkpointed(tmp_path, monkeypatch):
+    config = train.TrainConfig(**TINY, epochs=3, patience=None, seed=0)
+    path = tmp_path / "best.pt"
+    calls = iter([0.5, 0.2, 0.9])
+
+    def fake_epoch(model, loader, device, dice_weight, optimizer):
+        return (0.1, 0.5) if optimizer is not None else (next(calls), 0.5)
+
+    monkeypatch.setattr(train, "_run_epoch", fake_epoch)
+    result = train.train(
+        config, checkpoint=path, datasets=(tiny_dataset(4), tiny_dataset(4))
+    )
+
+    x = torch.randn(1, 3, 32, 32)
+    with torch.no_grad():
+        assert torch.allclose(result.model.eval()(x), train.load_checkpoint(path)(x))
