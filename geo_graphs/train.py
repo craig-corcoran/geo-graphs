@@ -370,6 +370,18 @@ def _epoch_apls(
     return report.apls_cleaned if report.n_scored else None
 
 
+def _write_checkpoint(path: Path, state: dict, widths: Sequence[int]) -> None:
+    """Write weights plus the widths needed to rebuild the network.
+
+    Args:
+        path: Destination; parent directories are created.
+        state: A state dict, already on CPU.
+        widths: Channel widths the weights were trained with.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"state_dict": state, "widths": list(widths)}, path)
+
+
 def train(
     config: TrainConfig,
     source: data.TileSource | None = None,
@@ -472,6 +484,11 @@ def train(
                 for key, value in model.state_dict().items()
             }
             line += "  *"
+            # Write as we improve rather than only at the end: a run killed at
+            # epoch 29 of 40 otherwise leaves nothing on disk, and these runs
+            # are long enough to lose to an OOM or a closed laptop.
+            if checkpoint is not None:
+                _write_checkpoint(checkpoint, best_state, config.widths)
         else:
             stale_epochs += 1
 
@@ -494,10 +511,7 @@ def train(
         logger.info(f"restored epoch {best_epoch} ({config.select_on} {best_score:.4f})")
 
     if checkpoint is not None:
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {"state_dict": model.state_dict(), "widths": list(config.widths)}, checkpoint
-        )
+        _write_checkpoint(checkpoint, model.state_dict(), config.widths)
         logger.info(f"wrote {checkpoint}")
 
     return TrainResult(

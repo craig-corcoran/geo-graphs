@@ -233,6 +233,33 @@ def test_checkpoint_round_trips(tmp_path):
         assert torch.allclose(result.model.eval()(x), restored(x))
 
 
+def test_checkpoint_survives_a_run_that_never_finishes(tmp_path, monkeypatch):
+    """A killed run should still leave the best epoch so far on disk.
+
+    These runs are long enough that losing one to an OOM is a real cost, and
+    the end-of-run write alone leaves nothing behind.
+    """
+    config = train.TrainConfig(**TINY, epochs=10, batch_size=4, seed=0)
+    path = tmp_path / "model.pt"
+
+    real_epoch, calls = train._run_epoch, {"n": 0}
+
+    def die_partway(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] > 6:
+            raise KeyboardInterrupt("pretend the OOM killer arrived")
+        return real_epoch(*args, **kwargs)
+
+    monkeypatch.setattr(train, "_run_epoch", die_partway)
+    with pytest.raises(KeyboardInterrupt):
+        train.train(
+            config, checkpoint=path, datasets=(tiny_dataset(4), tiny_dataset(4))
+        )
+
+    assert path.exists(), "no checkpoint survived the interrupted run"
+    assert train.load_checkpoint(path) is not None
+
+
 def test_predict_tile_logits_covers_the_whole_tile():
     sample = synthetic_sample(size=128)
     model = UNet(in_channels=3, widths=(8, 16))
