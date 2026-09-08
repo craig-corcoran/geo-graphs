@@ -543,3 +543,180 @@ path is complete and the ceiling is real.
 **What it motivates.** The loader is proven, so the 24 GB AOI 2 Vegas tarball is
 now worth pulling. After that the first genuine experiment is threshold
 selection, tuned on APLS rather than IoU.
+
+## 2026-09-08 — The threshold was worth 0.08 APLS, and IoU pointed the wrong way
+
+`predict_mask`'s threshold had never been tuned; every number so far came from
+the 0.5 default. Swept it against APLS on the frozen `vegas_best.pt` checkpoint,
+over the same 40 validation tiles the run itself scored. No retraining —
+`make threshold-sweep`, about 25 seconds.
+
+Logits and the ceiling graph are threshold-independent, so both are computed
+once per tile and only mask → skeleton → cleanup → APLS repeats. That is what
+makes a 15-point sweep cost roughly one evaluation pass rather than fifteen.
+
+### The trade, measured
+
+| thr | IoU | APLS | median | gt→prop | prop→gt | frac of ceiling |
+|---|---|---|---|---|---|---|
+| 0.01 | 0.4702 | 0.7885 | 0.8246 | 0.8273 | 0.7705 | 0.8119 |
+| **0.02** | 0.5162 | **0.8071** | 0.8374 | 0.8232 | 0.8258 | **0.8314** |
+| 0.03 | 0.5392 | 0.8030 | 0.8340 | 0.8148 | 0.8261 | 0.8271 |
+| 0.05 | 0.5626 | 0.7967 | **0.8427** | 0.7907 | 0.8401 | 0.8205 |
+| 0.10 | 0.5842 | 0.7933 | 0.8289 | 0.7614 | 0.8605 | 0.8168 |
+| 0.15 | 0.5907 | 0.7699 | 0.8064 | 0.7313 | 0.8473 | 0.7924 |
+| 0.30 | **0.5947** | 0.7558 | 0.7914 | 0.7018 | 0.8728 | 0.7779 |
+| 0.50 | 0.5923 | 0.7247 | 0.7595 | 0.6600 | 0.8739 | 0.7459 |
+| 0.80 | 0.5702 | 0.6688 | 0.7030 | 0.5915 | 0.8559 | 0.6878 |
+
+`gt→prop` falls monotonically with threshold across the whole range, from 0.827
+to 0.592: thinning the mask severs roads, exactly as `predict_mask`'s docstring
+claims. `prop→gt` is far flatter, 0.77 to 0.87, so the trade is not symmetric —
+most of what the threshold buys or loses is on the missed-road side.
+
+### The headline, and it is the project's own thesis
+
+**IoU peaks at 0.30. APLS peaks at 0.02.** Tuning this threshold on pixel
+overlap would have chosen 0.30 and left 0.05 APLS on the table; the APLS-optimal
+0.02 is 0.078 *worse* on IoU than the IoU-optimal point. The two metrics do not
+merely differ in scale, they disagree about the direction of improvement. This
+is the clearest instance so far of the gap the project exists to demonstrate,
+and it cost no training to produce.
+
+### How much of it is real
+
+Paired per-tile differences across the same 40 tiles:
+
+| comparison | mean Δ APLS | sem | t |
+|---|---|---|---|
+| 0.02 vs 0.50 | +0.0824 | 0.0265 | +3.11 |
+| 0.05 vs 0.50 | +0.0720 | 0.0252 | +2.86 |
+| 0.10 vs 0.50 | +0.0685 | 0.0202 | +3.39 |
+| 0.02 vs 0.05 | +0.0104 | 0.0090 | +1.14 |
+| 0.02 vs 0.10 | +0.0138 | 0.0135 | +1.02 |
+| 0.05 vs 0.10 | +0.0035 | 0.0105 | +0.33 |
+
+Two separate conclusions, and they should not be run together. **"Move well
+below 0.5" is solid** — around +0.07 to +0.08 APLS at t ≈ +3, improving 22-24
+tiles out of 40. **"Which value in 0.02–0.12" is not resolvable at n=40** — every
+within-plateau comparison sits under |t| = 1.6. Reporting 0.02 as *the* optimum
+would be reading noise; the finding is the plateau, not its argmax.
+
+Per-tile spread stays high throughout (sd ≈ 0.16 against a mean of 0.80), which
+is the ~300 m chip size doing what the `AggregateReport` docstring warns about.
+
+### Choosing within the plateau
+
+0.02 has the best mean and the best fraction of ceiling. It also sits one step
+from a cliff: at 0.01 `prop→gt` collapses from 0.826 to 0.771 and mean APLS
+drops 0.019, because a near-zero threshold starts admitting noise as road. 0.05
+holds the best *median* and has margin on both sides; 0.10 gives up 0.014 mean
+APLS for the most margin of all and near-peak IoU.
+
+Since the plateau is flat within noise, the house rule says decide on what
+survives scale rather than on the argmax. **0.05** is the defensible default: a
+cliff at 0.01 that a retrained or differently-calibrated model could shift is a
+real operational risk, and 0.05 sits far enough from it to absorb that without
+giving up measurable score. Left unset in code pending that call.
+
+### What it motivates
+
+The sweep's first range started at 0.2 and missed the optimum entirely — the
+committed default now spans 0.01 to 0.80, dense at the low end. Worth
+remembering as a general failure mode: a sweep that peaks at its own boundary
+has not found an optimum, it has found the edge of the grid.
+
+Two follow-ons. The threshold interacts with `cleanup`'s spur-pruning length —
+a lower threshold produces more short spurs, which is exactly what pruning
+removes, so the two should be swept jointly rather than one at a time. And this
+sweep re-ranks nothing about epoch selection: the checkpoint was chosen by
+`val_loss`, a pixel measure, and the same disagreement that shows up here
+between IoU and APLS applies to that choice too.
+
+## 2026-09-08 (later) — clDice: a weak metric with a differently-shaped gradient
+
+Implemented `soft_cldice_loss` and dihedral augmentation, then measured clDice
+statically before spending a training run on it. The static result is a clean
+negative; the dynamic question it raises is not, and the two get reported
+separately because the first does not imply the second.
+
+### What clDice does on our geometry
+
+Cost of a severing gap, relative to the same damage measured by soft Dice:
+
+| geometry | clDice cost ÷ Dice cost |
+|---|---|
+| 3×3 grid, roads spanning the tile (**matches a SpaceNet chip**) | 0.87 |
+| single bar, edge-to-edge | 0.99–1.00 |
+| single bar, inset margin 2, 9 px wide | 1.14 |
+| single bar, inset margin 8, 13 px wide | 1.32 |
+
+On the geometry we actually have, clDice punishes a severing gap **less** than
+plain Dice does. Two mechanisms, both structural rather than tunable.
+
+**The sensitivity term counts centreline pixels, not connectivity.**
+`sum(S_true · V_pred) / sum(S_true)` asks how much of the true centreline the
+prediction still covers. A 9 px cut removes 9 px of true centreline whether it
+severs a block mid-run or merely trims a dead end — measured identical to five
+decimals. Whether the cut disconnects the network never enters the numerator.
+The part that can distinguish them is end-retraction in the *precision* term,
+where a severing cut creates two new ends that erode back by the road
+half-width: skeleton sums 550 (severed) against 554 (trimmed) out of 567, a
+0.7% effect that the sensitivity term swamps.
+
+**Roads leaving the tile never retract.** `max_pool2d` pads with `-inf`, so
+erosion (`-maxpool(-x)`) treats out-of-frame as foreground. A road running off
+the chip keeps its skeleton to the border and loses no length at that end. Our
+chips are ~390 m squares whose roads leave on all four sides, so this is the
+common case, not the exception.
+
+### The knobs do not move it
+
+| eps | iterations 5 | 10 | 20 |
+|---|---|---|---|
+| 1.0 | 0.871 | 0.871 | 0.871 |
+| 1e-2 | 0.872 | 0.872 | 0.872 |
+| 1e-4 | 0.872 | 0.872 | 0.872 |
+
+Four orders of magnitude on the smoothing term and a 4× range on the peel count
+move the ratio by 0.001. The soft skeleton converges by iteration 5 for a 9 px
+road, so `SKELETON_ITERATIONS = 10` is comfortably past sufficiency and raising
+it buys nothing. This axis is closed: no tuning of `eps` or `iterations`
+rescues clDice's behaviour *as a measurement*.
+
+### Where it stops being a negative result
+
+Loss value and training signal are different objects, and the above measures
+only the first. Gradient mass landing inside the severing gap, which is 0.9% of
+the tile's pixels:
+
+| loss | share of \|grad\| in the gap | total \|grad\| |
+|---|---|---|
+| soft Dice | 0.90% | 0.0184 |
+| clDice | **1.59%** | 0.0091 |
+
+Dice is *exactly* uniform — 0.90% of gradient mass on 0.9% of pixels means it is
+indifferent to where the error sits, which is the whole complaint against pixel
+losses stated numerically. clDice concentrates 1.8× on the break. So it pushes
+where we want even while scoring the finished state lower, and its total
+magnitude is about half Dice's, which makes `cldice_weight` the real lever —
+the one knob the static sweep above does not cover.
+
+A loss that discriminates poorly between two finished states can still steer
+well. Nothing measured so far settles that, so the A/B is run rather than
+skipped, and no default is changed on the strength of the static result alone.
+
+### What it motivates
+
+Two runs at `epochs=40, patience=10` (raised from 20/5 because the dihedral
+group gives 8× effective data and the baseline was still improving when
+patience cut it at epoch 16): augmentation alone, then augmentation plus
+`cldice_weight=0.5`. Baseline for both is the 2026-09-08 Vegas run — unchanged,
+since `augment` and `cldice_weight` default off and the seam commit is a
+verified no-op.
+
+Independent of the outcome: this is a local, soft proxy that rewards
+overlapping skeletons rather than connected routes, so two fragments 20 px apart
+still get no gradient pulling them together, and it cannot touch the 0.9703
+non-planarity ceiling, which is a representation limit rather than a loss one.
+Putting topology in the objective properly is Stage 2 (Sat2Graph).
