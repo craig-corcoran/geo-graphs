@@ -1,4 +1,4 @@
-"""Training data: tile sources, synthetic imagery, and crop sampling.
+"""Training data: tile sources, synthetic imagery, crop sampling, augmentation.
 
 The segmentation model consumes ``(image, mask)`` crops. The mask comes from
 :mod:`raster`, which renders the OSM ground-truth graph — that path is already
@@ -294,6 +294,85 @@ def take_crop(sample: TileSample, spec: CropSpec) -> tuple[np.ndarray, np.ndarra
     rows = slice(spec.row, spec.row + spec.size)
     cols = slice(spec.col, spec.col + spec.size)
     return sample.image[rows, cols], sample.mask[rows, cols]
+
+
+#: Size of the dihedral group of the square: four quarter turns, each optionally
+#: composed with a flip.
+#:
+#: Overhead imagery has no canonical orientation, so all eight are *exact*
+#: label-preserving symmetries of the problem rather than approximations of one,
+#: the way they are for natural photographs. That makes the group an eight-fold
+#: effective dataset for no extra bytes on disk.
+DIHEDRAL_ORDER = 8
+
+
+def dihedral(array: np.ndarray, index: int) -> np.ndarray:
+    """Apply one of the eight dihedral transforms to a crop array.
+
+    Acts on the leading two axes only, so an ``(H, W, C)`` image and its
+    ``(H, W)`` mask are transformed identically and the channel axis is left
+    alone.
+
+    Both operations permute pixels rather than resample them, so the result is
+    exact on the grid: a mask keeps its road pixel count to the pixel, and an
+    image picks up no interpolation blur. That is the whole reason to stop at
+    the dihedral group instead of allowing arbitrary angles.
+
+    Args:
+        array: ``(H, W)`` or ``(H, W, C)``, any dtype.
+        index: Which group element, in ``[0, DIHEDRAL_ORDER)``. The low bit
+            selects a left-right flip; the rest is the number of quarter turns.
+
+    Returns:
+        A new contiguous array of the same dtype. Square inputs keep their
+        shape; the odd quarter turns swap ``H`` and ``W`` on non-square ones.
+
+    Raises:
+        ValueError: If ``index`` falls outside the group, or the array has
+            fewer than two axes.
+    """
+    if not 0 <= index < DIHEDRAL_ORDER:
+        raise ValueError(f"dihedral index {index} outside [0, {DIHEDRAL_ORDER})")
+    if array.ndim < 2:
+        raise ValueError(f"expected at least two axes, got shape {array.shape}")
+
+    quarter_turns, flipped = divmod(index, 2)
+    turned = np.rot90(array, k=quarter_turns, axes=(0, 1))
+    # Both axes are named explicitly: np.rot90 would otherwise be free to pick
+    # its own pair, and np.flip defaults to reversing *every* axis, which on an
+    # (H, W, C) image would reverse the channels too.
+    flopped = np.flip(turned, axis=1) if flipped else turned
+    # rot90 and flip return views; copy so the caller cannot write through to
+    # the tile the crop came from, and so downstream tensor conversion has the
+    # contiguous buffer it wants.
+    return np.ascontiguousarray(flopped)
+
+
+def augment_crop(
+    image: np.ndarray, mask: np.ndarray, index: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply one dihedral transform to an image and its mask together.
+
+    Exists so the pairing cannot drift. The two arrays differ in rank, and
+    transforming them at separate call sites is exactly how an image ends up
+    rotated away from the label it is supposed to match.
+
+    Args:
+        image: ``(H, W, C)`` crop.
+        mask: ``(H, W)`` crop, aligned with ``image``.
+        index: Which group element; see :func:`dihedral`.
+
+    Returns:
+        ``(image, mask)`` under the same transform.
+
+    Raises:
+        ValueError: If the two crops disagree on their spatial shape.
+    """
+    if image.shape[:2] != mask.shape[:2]:
+        raise ValueError(
+            f"image {image.shape[:2]} and mask {mask.shape[:2]} disagree on shape"
+        )
+    return dihedral(image, index), dihedral(mask, index)
 
 
 def load_sample(sample_id: str, source: str = "synthetic", **kwargs) -> TileSample:

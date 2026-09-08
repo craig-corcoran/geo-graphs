@@ -119,21 +119,167 @@ def soft_dice_loss(logits: Tensor, targets: Tensor, eps: float = 1.0) -> Tensor:
     return 1.0 - ((2.0 * intersection + eps) / (total + eps)).mean()
 
 
-def segmentation_loss(
-    logits: Tensor, targets: Tensor, dice_weight: float = 0.5
+#: Peeling iterations for :func:`soft_skeleton`.
+#:
+#: Each iteration erodes by one pixel of radius, so the skeleton of a bar is
+#: only complete once the iteration count reaches its half-width. Roads here
+#: rasterize to roughly 10-14 px at 1 m/px, a half-width of 5-7, and 10 leaves
+#: headroom for the widest of them and for a model that predicts a road thicker
+#: than the label. Under-counting silently returns a hollow skeleton -- the
+#: centreline of a wide road never appears -- and that failure looks like a
+#: weak loss rather than a mis-set knob, so the committed default is the
+#: correct one and a smoke run turns it down at the call site.
+SKELETON_ITERATIONS = 10
+
+
+def _soft_erode(x: Tensor) -> Tensor:
+    """Grayscale erosion by a 3x3 box, as a differentiable min-pool."""
+    return -nn.functional.max_pool2d(-x, 3, stride=1, padding=1)
+
+
+def _soft_dilate(x: Tensor) -> Tensor:
+    """Grayscale dilation by a 3x3 box."""
+    return nn.functional.max_pool2d(x, 3, stride=1, padding=1)
+
+
+def _soft_open(x: Tensor) -> Tensor:
+    """Erosion followed by dilation; anti-extensive, so ``open(x) <= x``."""
+    return _soft_dilate(_soft_erode(x))
+
+
+def soft_skeleton(probs: Tensor, iterations: int = SKELETON_ITERATIONS) -> Tensor:
+    """Differentiable morphological skeleton of a probability map.
+
+    Peels the shape one pixel of radius at a time. At each level the residue
+    ``relu(x - open(x))`` holds the parts too thin to survive an opening — the
+    medial axis of what is left — and those residues accumulate without ever
+    exceeding one, since ``skel + relu(delta - skel * delta)`` adds
+    ``delta * (1 - skel)`` while both stay in ``[0, 1]``.
+
+    Ends erode too, so the skeleton of a bar is shorter than the bar by about
+    its half-width at each end. That shortening is not an artifact to correct:
+    it is what makes a gap a larger fraction of the centreline than of the area,
+    which is the sensitivity :func:`soft_cldice_loss` is built on.
+
+    Args:
+        probs: ``(N, C, H, W)`` values in ``[0, 1]`` — probabilities or a binary
+            mask, not logits.
+        iterations: Peeling steps. Must reach the shape's half-width in pixels
+            or the skeleton is hollow; see :data:`SKELETON_ITERATIONS`. This is
+            the cost knob: each step is three pooling passes over the batch.
+
+    Returns:
+        ``(N, C, H, W)`` skeleton membership in ``[0, 1]``, differentiable
+        with respect to ``probs``.
+    """
+    relu = nn.functional.relu
+    skeleton = relu(probs - _soft_open(probs))
+    eroded = probs
+    for _ in range(iterations):
+        eroded = _soft_erode(eroded)
+        delta = relu(eroded - _soft_open(eroded))
+        skeleton = skeleton + relu(delta - skeleton * delta)
+    return skeleton
+
+
+def soft_cldice_loss(
+    logits: Tensor,
+    targets: Tensor,
+    iterations: int = SKELETON_ITERATIONS,
+    eps: float = 1.0,
 ) -> Tensor:
-    """Binary cross-entropy plus soft Dice.
+    """Centreline Dice loss: Dice measured on skeletons rather than volumes.
+
+    Dice and cross-entropy are both pixel measures, and both are nearly
+    indifferent to the one failure that dominates APLS. A few pixels missing
+    under a tree shadow barely move an overlap ratio, but they sever a route.
+    clDice scores against the *centreline*, which runs straight through such a
+    gap and — because skeleton ends retract by roughly the road half-width —
+    loses far more than the gap's own length when the road is cut.
+
+    Two quantities, following Shit et al., "clDice - a Novel
+    Topology-Preserving Loss Function for Tubular Structure Segmentation"
+    (CVPR 2021):
+
+    - *Topological precision*: how much of the predicted skeleton lies on real
+      road, which punishes invented connections.
+    - *Topological sensitivity*: how much of the true skeleton the prediction
+      covers, which punishes severed ones.
+
+    They combine by **harmonic mean**, the same combination APLS uses over its
+    two directions, so neither direction can be bought by sacrificing the other.
+
+    What this does not do, and should not be sold as doing: it is a *local,
+    soft* proxy. It rewards overlapping skeletons, not connected routes — two
+    fragments 20 px apart overlap nothing and generate no gradient pulling them
+    together, because the pooling that builds the skeleton only ever sees a 3x3
+    neighbourhood per step. And it cannot touch the ~0.97 non-planarity ceiling,
+    which is a representation limit of a 2D mask rather than a loss one; the
+    number it can move is ``fraction_of_ceiling``.
+
+    Args:
+        logits: ``(N, 1, H, W)`` raw model outputs. Logits, not probabilities —
+            the sigmoid is applied here, as in :func:`soft_dice_loss`.
+        targets: ``(N, 1, H, W)`` float targets in ``{0, 1}``.
+        iterations: Skeletonization steps; see :data:`SKELETON_ITERATIONS`.
+        eps: Smoothing added to numerator and denominator of both ratios,
+            matching :func:`soft_dice_loss`. It also keeps every division
+            finite: an empty skeleton scores 1 rather than dividing by zero, so
+            the loss is 0 when prediction and target are both empty.
+
+    Returns:
+        Scalar loss in ``[0, 1]``.
+    """
+    probs = torch.sigmoid(logits)
+    predicted_skeleton = soft_skeleton(probs, iterations)
+    target_skeleton = soft_skeleton(targets, iterations)
+
+    dims = tuple(range(1, probs.ndim))
+    precision = ((predicted_skeleton * targets).sum(dims) + eps) / (
+        predicted_skeleton.sum(dims) + eps
+    )
+    sensitivity = ((target_skeleton * probs).sum(dims) + eps) / (
+        target_skeleton.sum(dims) + eps
+    )
+    return 1.0 - (2.0 * precision * sensitivity / (precision + sensitivity)).mean()
+
+
+def segmentation_loss(
+    logits: Tensor,
+    targets: Tensor,
+    dice_weight: float = 0.5,
+    cldice_weight: float = 0.0,
+    cldice_iterations: int = SKELETON_ITERATIONS,
+) -> Tensor:
+    """Binary cross-entropy plus soft Dice, optionally blended with clDice.
+
+    The pixel terms come first: ``dice_weight`` mixes cross-entropy with soft
+    Dice, and ``cldice_weight`` then mixes that pixel loss with the centreline
+    term. Nested convex blends rather than an extra additive term, so the total
+    stays on the same scale whatever the weights and two runs remain comparable.
+
+    clDice blends, it does not replace: the paper reports it is unstable used
+    alone, so ``cldice_weight`` is meant for the low end of its range.
 
     Args:
         logits: ``(N, 1, H, W)`` raw model outputs.
         targets: ``(N, 1, H, W)`` float targets in ``{0, 1}``.
         dice_weight: Blend factor; 0 is pure cross-entropy, 1 is pure Dice.
+        cldice_weight: Share of the centreline term. Exactly 0 skips the
+            skeletonization entirely rather than multiplying it away, since the
+            iterated pooling is the expensive part of the loss.
+        cldice_iterations: Skeletonization steps, unused at weight 0; see
+            :data:`SKELETON_ITERATIONS`.
 
     Returns:
         Scalar loss.
     """
     bce = nn.functional.binary_cross_entropy_with_logits(logits, targets)
-    return (1.0 - dice_weight) * bce + dice_weight * soft_dice_loss(logits, targets)
+    pixel = (1.0 - dice_weight) * bce + dice_weight * soft_dice_loss(logits, targets)
+    if cldice_weight == 0.0:
+        return pixel
+    cldice = soft_cldice_loss(logits, targets, iterations=cldice_iterations)
+    return (1.0 - cldice_weight) * pixel + cldice_weight * cldice
 
 
 def logit(probability: float) -> float:

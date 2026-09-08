@@ -5,12 +5,15 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from geo_graphs import model as model_module
 from geo_graphs.model import (
     UNet,
     logit,
     predict_mask,
     segmentation_loss,
+    soft_cldice_loss,
     soft_dice_loss,
+    soft_skeleton,
 )
 
 
@@ -18,6 +21,32 @@ def targets(batch: int = 2, size: int = 32) -> torch.Tensor:
     t = torch.zeros(batch, 1, size, size)
     t[:, :, size // 3 : 2 * size // 3, :] = 1.0
     return t
+
+
+def road_bar(size: int = 32, width: int = 9, margin: int = 2) -> torch.Tensor:
+    """A horizontal road that stops short of the frame, so its ends can erode.
+
+    The margin matters: max-pooling treats out-of-frame as background for
+    dilation and as foreground for erosion, so a bar running to the image edge
+    never loses length to skeletonization and the centreline effect vanishes.
+    """
+    t = torch.zeros(1, 1, size, size)
+    row = (size - width) // 2
+    t[:, :, row : row + width, margin : size - margin] = 1.0
+    return t
+
+
+def sever(mask: torch.Tensor, gap: int = 3) -> torch.Tensor:
+    """Cut the bar clean through with a narrow vertical gap."""
+    cut = mask.clone()
+    middle = mask.shape[-1] // 2
+    cut[:, :, :, middle : middle + gap] = 0.0
+    return cut
+
+
+def saturated(mask: torch.Tensor) -> torch.Tensor:
+    """Logits that decode back to ``mask`` under a 0.5 threshold."""
+    return torch.where(mask > 0, 20.0, -20.0)
 
 
 @pytest.mark.parametrize("widths", [(8, 16), (8, 16, 32), (4, 8, 16, 32)])
@@ -83,6 +112,129 @@ def test_segmentation_loss_blends_its_two_terms():
 
     assert bce_only != dice_only
     assert blended == pytest.approx(0.5 * (bce_only + dice_only), abs=1e-5)
+
+
+def test_soft_skeleton_is_thinner_than_the_shape():
+    bar = road_bar()
+    skeleton = soft_skeleton(bar)
+    assert 0.0 < float(skeleton.sum()) < 0.25 * float(bar.sum())
+    assert torch.all(skeleton <= bar + 1e-6)
+
+
+def test_soft_skeleton_stays_inside_the_unit_interval():
+    probs = torch.rand(1, 1, 24, 24)
+    skeleton = soft_skeleton(probs)
+    assert float(skeleton.min()) >= 0.0
+    assert float(skeleton.max()) <= 1.0 + 1e-6
+
+
+def test_too_few_iterations_leave_the_skeleton_hollow():
+    """Why the iteration default is set above the road half-width, not below it.
+
+    A 9px bar needs four peels before anything is thin enough to survive an
+    opening. Stop short and the centreline never appears, which reads as a loss
+    that does nothing rather than as a mis-set knob.
+    """
+    bar = road_bar(width=9)
+    assert float(soft_skeleton(bar, iterations=3).sum()) == 0.0
+    assert float(soft_skeleton(bar, iterations=10).sum()) > 0.0
+
+
+def test_cldice_rewards_a_perfect_prediction():
+    bar = road_bar()
+    assert float(soft_cldice_loss(saturated(bar), bar)) == pytest.approx(0.0, abs=1e-4)
+
+
+@pytest.mark.parametrize("empty", ["prediction", "target", "both"])
+def test_cldice_is_finite_on_degenerate_masks(empty):
+    bar = road_bar()
+    blank = torch.zeros_like(bar)
+    predicted = blank if empty in ("prediction", "both") else bar
+    target = blank if empty in ("target", "both") else bar
+
+    loss = soft_cldice_loss(saturated(predicted), target)
+    assert math.isfinite(float(loss))
+    assert 0.0 <= float(loss) <= 1.0
+
+
+def test_cldice_is_zero_when_both_are_empty():
+    blank = torch.zeros(1, 1, 16, 16)
+    loss = soft_cldice_loss(torch.full_like(blank, -20.0), blank)
+    assert float(loss) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_cldice_gradients_reach_the_logits():
+    """Non-None, finite and non-zero: min/max pooling routes gradient, not blocks it."""
+    bar = road_bar()
+    logits = torch.where(bar > 0, 1.5, -1.5).requires_grad_(True)
+
+    soft_cldice_loss(logits, bar).backward()
+
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+    assert float(logits.grad.abs().sum()) > 0.0
+
+
+def test_a_severing_gap_costs_more_on_cldice_than_on_dice():
+    """The entire justification for the loss, as a number.
+
+    A narrow cut through a wide road removes a small share of the area but a
+    large share of the centreline, because skeleton ends retract by roughly the
+    half-width. Dice sees the area; clDice sees the severed route.
+    """
+    bar = road_bar()
+    cut = sever(bar, gap=3)
+    perfect, gapped = saturated(bar), saturated(cut)
+
+    dice_cost = float(soft_dice_loss(gapped, bar)) - float(soft_dice_loss(perfect, bar))
+    cldice_cost = float(soft_cldice_loss(gapped, bar)) - float(
+        soft_cldice_loss(perfect, bar)
+    )
+
+    assert dice_cost > 0.0
+    assert cldice_cost > 1.2 * dice_cost
+
+
+def test_cldice_weight_zero_is_an_exact_no_op():
+    """Bit-identical, so turning the term off cannot perturb a baseline run."""
+    t = targets()
+    logits = torch.randn_like(t)
+    for dice_weight in (0.0, 0.5, 1.0):
+        before = segmentation_loss(logits, t, dice_weight=dice_weight)
+        after = segmentation_loss(logits, t, dice_weight=dice_weight, cldice_weight=0.0)
+        assert torch.equal(before, after)
+
+
+def test_cldice_weight_zero_skips_the_skeleton(monkeypatch):
+    """The iterated pooling is the expensive part; weight 0 must not pay for it."""
+
+    def explode(*args, **kwargs):
+        raise AssertionError("skeletonized despite cldice_weight=0")
+
+    monkeypatch.setattr(model_module, "soft_skeleton", explode)
+    t = targets()
+    segmentation_loss(torch.randn_like(t), t, cldice_weight=0.0)
+
+
+def test_segmentation_loss_blends_the_centreline_term():
+    """Nested convex blend: clDice mixes with the pixel loss, it does not replace it."""
+    bar = road_bar()
+    logits = torch.randn_like(bar)
+
+    pixel = float(segmentation_loss(logits, bar, dice_weight=0.5))
+    centreline = float(soft_cldice_loss(logits, bar))
+    blended = float(segmentation_loss(logits, bar, dice_weight=0.5, cldice_weight=0.25))
+
+    assert blended == pytest.approx(0.75 * pixel + 0.25 * centreline, abs=1e-5)
+
+
+def test_fewer_skeleton_iterations_stay_a_call_site_choice():
+    """The cost knob is a parameter, so a smoke run turns it down without an edit."""
+    bar = road_bar()
+    logits = saturated(sever(bar))
+    cheap = float(segmentation_loss(logits, bar, cldice_weight=0.5, cldice_iterations=2))
+    full = float(segmentation_loss(logits, bar, cldice_weight=0.5))
+    assert cheap != full
 
 
 def test_gradients_reach_every_parameter():

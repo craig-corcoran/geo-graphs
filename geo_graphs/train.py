@@ -68,6 +68,11 @@ class TrainConfig:
             runs every epoch.
         apls_eval_tiles: Validation tiles scored end to end each epoch. Zero
             skips it, which is required unless ``select_on`` is ``val_apls``.
+        augment: Apply the dihedral symmetry group to training crops. Overhead
+            imagery has no canonical orientation, so the eight rotations and
+            reflections are exact symmetries rather than approximations.
+        cldice_weight: Blend factor for the centreline Dice term. Zero is the
+            pixel-only loss.
     """
 
     train_ids: tuple[str, ...] = ("tile_0", "tile_2")
@@ -87,6 +92,8 @@ class TrainConfig:
     select_on: SelectOn = "val_loss"
     patience: int | None = 5
     apls_eval_tiles: int = 0
+    augment: bool = False
+    cldice_weight: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +136,11 @@ class TrainResult:
     stopped_early: bool = False
 
 
+#: Second word of the augmentation seed, so those draws form a stream
+#: independent of the crop-window sampling that shares the same run seed.
+_AUGMENT_STREAM = 1
+
+
 class CropDataset(Dataset):
     """Materializes crop windows drawn from one or more tiles.
 
@@ -138,20 +150,47 @@ class CropDataset(Dataset):
 
     Thin by design: it holds the windows chosen by :func:`data.crop_specs` and
     cuts them when asked, so the sampling logic stays testable without torch.
+    Augmentation is the one thing it adds on the way out, and only when asked:
+    validation crops must stay fixed or the epoch-to-epoch number is comparing
+    two different datasets.
     """
 
     def __init__(
         self,
         samples: Sequence[data.TileSample],
         specs: Sequence[tuple[int, data.CropSpec]],
+        augment: bool = False,
+        rng: np.random.Generator | None = None,
     ) -> None:
         """
         Args:
             samples: Tiles the crops are cut from.
             specs: ``(sample index, window)`` pairs.
+            augment: Draw one of the eight dihedral transforms per crop and
+                apply it to the image and its mask together. Training splits
+                only.
+            rng: Source of randomness for those draws. Required when
+                ``augment`` is set, so the run stays replayable from its seed.
+
+        Raises:
+            ValueError: If ``augment`` is set without an ``rng``.
         """
+        if augment and rng is None:
+            raise ValueError("augment=True needs an explicit rng to stay reproducible")
         self.samples = tuple(samples)
         self.specs = tuple(specs)
+        self.augment = augment
+        # Per-epoch variation and reproducibility pull against each other here.
+        # Keying the transform on the crop index alone would hand every crop the
+        # same rotation on every epoch -- a 1x dataset dressed up as 8x -- while
+        # an unseeded draw is not replayable at all. Advancing one seeded stream
+        # across __getitem__ calls gives both: a fresh transform each visit, and
+        # a sequence fixed by TrainConfig.seed. The stream is the dataset's own
+        # rather than torch's global one, so a change to the model cannot
+        # perturb which augmentations the data sees. (It lives in the dataset
+        # object, so DataLoader worker processes would each fork a copy; the
+        # loaders here are single-process.)
+        self._rng = rng
 
     def __len__(self) -> int:
         return len(self.specs)
@@ -159,6 +198,10 @@ class CropDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
         sample_index, spec = self.specs[index]
         image, mask = data.take_crop(self.samples[sample_index], spec)
+        if self.augment and self._rng is not None:
+            image, mask = data.augment_crop(
+                image, mask, int(self._rng.integers(data.DIHEDRAL_ORDER))
+            )
         return (
             torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))),
             torch.from_numpy(mask.astype(np.float32))[None],
@@ -192,16 +235,24 @@ def build_dataset(
 ) -> CropDataset:
     """Load samples and spread crop windows across them.
 
+    The ids decide augmentation rather than a flag: ``config.augment`` reaches
+    the dataset only when every requested id is one of ``config.train_ids``.
+    Callers name the split by which ids they ask for, so keying off that keeps
+    the two calls in :func:`train` from having to agree on a convention, and
+    keeps a rotated crop out of validation — where it would make the score
+    noisy and incomparable across epochs.
+
     Args:
         source: Where imagery and labels come from.
-        sample_ids: Ids to load.
+        sample_ids: Ids to load. Whether they are a subset of
+            ``config.train_ids`` decides whether the crops get augmented.
         n_crops: Total crops to sample, divided between the loaded samples.
         config: Run configuration.
         seed_offset: Added to the run seed, so train and validation draw
             different windows.
 
     Returns:
-        A dataset over those samples.
+        A dataset over those samples, augmented only if they are training ids.
 
     Raises:
         ValueError: If no sample is large enough to hold one crop.
@@ -234,7 +285,14 @@ def build_dataset(
                 sample.mask, size=config.crop_size, count=per_sample, rng=rng
             )
         )
-    return CropDataset(samples, specs)
+
+    is_train = set(sample_ids) <= set(config.train_ids)
+    return CropDataset(
+        samples,
+        specs,
+        augment=config.augment and is_train,
+        rng=np.random.default_rng((config.seed + seed_offset, _AUGMENT_STREAM)),
+    )
 
 
 def _run_epoch(
@@ -243,8 +301,13 @@ def _run_epoch(
     device: torch.device,
     dice_weight: float,
     optimizer: torch.optim.Optimizer | None,
+    cldice_weight: float = 0.0,
 ) -> tuple[float, float]:
     """Run one pass. Trains when an optimizer is given, otherwise evaluates.
+
+    New parameters go after ``optimizer``, and call sites pass by keyword.
+    Inserting one before it would silently rebind the optimizer to a float and
+    turn training into evaluation without an error.
 
     Returns:
         ``(mean_loss, mean_iou)``.
@@ -261,7 +324,12 @@ def _run_epoch(
                 optimizer.zero_grad(set_to_none=True)
 
             logits = model(images)
-            loss = segmentation_loss(logits, masks, dice_weight=dice_weight)
+            loss = segmentation_loss(
+                logits,
+                masks,
+                dice_weight=dice_weight,
+                cldice_weight=cldice_weight,
+            )
 
             if optimizer is not None:
                 loss.backward()
@@ -355,10 +423,20 @@ def train(
 
     for epoch in range(config.epochs):
         train_loss, _ = _run_epoch(
-            model, train_loader, device, config.dice_weight, optimizer
+            model,
+            train_loader,
+            device,
+            dice_weight=config.dice_weight,
+            optimizer=optimizer,
+            cldice_weight=config.cldice_weight,
         )
         val_loss, val_iou = _run_epoch(
-            model, val_loader, device, config.dice_weight, None
+            model,
+            val_loader,
+            device,
+            dice_weight=config.dice_weight,
+            optimizer=None,
+            cldice_weight=config.cldice_weight,
         )
         val_apls = _epoch_apls(model, source, config, device)
 
@@ -468,7 +546,12 @@ def overfit_one_batch(
     losses = []
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)
-        loss = segmentation_loss(model(images), masks, dice_weight=config.dice_weight)
+        loss = segmentation_loss(
+            model(images),
+            masks,
+            dice_weight=config.dice_weight,
+            cldice_weight=config.cldice_weight,
+        )
         loss.backward()
         optimizer.step()
         losses.append(float(loss.detach()))
@@ -773,6 +856,18 @@ def main() -> None:
         default=defaults.apls_eval_tiles,
         help="tiles scored end to end each epoch; required for --select-on val_apls",
     )
+    parser.add_argument(
+        "--augment",
+        action="store_true",
+        default=defaults.augment,
+        help="apply the dihedral symmetry group to training crops",
+    )
+    parser.add_argument(
+        "--cldice-weight",
+        type=float,
+        default=defaults.cldice_weight,
+        help="blend factor for the centreline Dice term; 0 is the pixel-only loss",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
@@ -797,6 +892,8 @@ def main() -> None:
         select_on=args.select_on,
         patience=args.patience or None,
         apls_eval_tiles=args.apls_eval_tiles,
+        augment=args.augment,
+        cldice_weight=args.cldice_weight,
     )
     result = train(config, source=source, checkpoint=args.checkpoint)
 

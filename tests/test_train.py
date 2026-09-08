@@ -53,10 +53,22 @@ class _FixedSource:
 _: type[data.TileSource] = _FixedSource
 
 
-def tiny_dataset(n_crops: int = 8, size: int = 32) -> train.CropDataset:
+def tiny_dataset(
+    n_crops: int = 8, size: int = 32, augment: bool = False, seed: int = 0
+) -> train.CropDataset:
     sample = synthetic_sample()
     specs = data.crop_specs(sample.mask, size, n_crops, np.random.default_rng(0))
-    return train.CropDataset([sample], [(0, spec) for spec in specs])
+    return train.CropDataset(
+        [sample],
+        [(0, spec) for spec in specs],
+        augment=augment,
+        rng=np.random.default_rng(seed),
+    )
+
+
+def dihedral_chw(chw: np.ndarray, index: int) -> np.ndarray:
+    """Transform a ``(C, H, W)`` tensor's spatial axes, leaving channels put."""
+    return data.dihedral(chw.transpose(1, 2, 0), index).transpose(2, 0, 1)
 
 
 def test_crop_dataset_yields_channel_first_float_tensors():
@@ -72,6 +84,101 @@ def test_crop_dataset_yields_channel_first_float_tensors():
 
 def test_crop_dataset_length_matches_its_specs():
     assert len(tiny_dataset(n_crops=5)) == 5
+
+
+def test_augmentation_off_reproduces_the_raw_crop():
+    """The default path must hand back exactly the tensors it did before."""
+    dataset = tiny_dataset(4)
+    sample_index, spec = dataset.specs[0]
+    image, mask = data.take_crop(dataset.samples[sample_index], spec)
+
+    got_image, got_mask = dataset[0]
+    assert np.array_equal(got_image.numpy(), image.transpose(2, 0, 1))
+    assert np.array_equal(got_mask.numpy()[0].astype(bool), mask)
+
+
+def test_augmentation_off_repeats_itself_across_epochs():
+    dataset = tiny_dataset(4)
+    first = [dataset[i][0].clone() for i in range(len(dataset))]
+    assert all(torch.equal(first[i], dataset[i][0]) for i in range(len(dataset)))
+
+
+def test_augmentation_varies_the_same_crop_across_epochs():
+    """A transform fixed per index is a 1x dataset dressed up as an 8x one."""
+    dataset = tiny_dataset(8, augment=True)
+    first = [dataset[i][0].clone() for i in range(len(dataset))]
+    assert any(not torch.equal(first[i], dataset[i][0]) for i in range(len(dataset)))
+
+
+def test_augmented_crops_are_dihedral_transforms_of_the_originals():
+    """Image and mask must land on the *same* group element, not merely on one.
+
+    Matching them separately would let a rotated image train against an
+    unrotated label, which looks like a model problem rather than a data one.
+    """
+    plain, augmented = tiny_dataset(8), tiny_dataset(8, augment=True)
+
+    for i in range(len(plain)):
+        image, mask = (t.numpy() for t in plain[i])
+        got_image, got_mask = (t.numpy() for t in augmented[i])
+
+        matches = [
+            k
+            for k in range(data.DIHEDRAL_ORDER)
+            if np.array_equal(dihedral_chw(image, k), got_image)
+        ]
+        assert matches, "augmented image is not a dihedral transform of the crop"
+        assert any(np.array_equal(dihedral_chw(mask, k), got_mask) for k in matches)
+
+
+def test_augmentation_preserves_the_road_pixel_count_of_every_crop():
+    """Reflection and rotation on a grid are measure-preserving; warps are not."""
+    plain, augmented = tiny_dataset(8), tiny_dataset(8, augment=True)
+    assert [float(plain[i][1].sum()) for i in range(len(plain))] == [
+        float(augmented[i][1].sum()) for i in range(len(augmented))
+    ]
+
+
+def test_augmentation_is_reproducible_from_its_seed():
+    a, b = tiny_dataset(8, augment=True, seed=5), tiny_dataset(8, augment=True, seed=5)
+    assert all(torch.equal(a[i][0], b[i][0]) for i in range(len(a)))
+
+
+def test_a_different_seed_draws_a_different_sequence():
+    a, b = tiny_dataset(8, augment=True, seed=0), tiny_dataset(8, augment=True, seed=1)
+    assert any(not torch.equal(a[i][0], b[i][0]) for i in range(len(a)))
+
+
+def test_augmentation_without_a_generator_is_refused():
+    """An implicit default would make the run unreplayable from its seed."""
+    sample = synthetic_sample()
+    specs = data.crop_specs(sample.mask, 32, 2, np.random.default_rng(0))
+    with pytest.raises(ValueError, match="rng"):
+        train.CropDataset([sample], [(0, s) for s in specs], augment=True)
+
+
+def build_split_datasets(augment: bool) -> tuple[train.CropDataset, train.CropDataset]:
+    source = _FixedSource([synthetic_sample(size=128), synthetic_sample(size=128)])
+    config = train.TrainConfig(
+        **TINY, train_ids=("s0",), val_ids=("s1",), augment=augment, seed=0
+    )
+    return (
+        train.build_dataset(source, config.train_ids, 4, config, 0),
+        train.build_dataset(source, config.val_ids, 4, config, 1000),
+    )
+
+
+def test_build_dataset_augments_the_training_split_only():
+    """Augmented validation crops make the epoch-to-epoch number incomparable."""
+    train_set, val_set = build_split_datasets(augment=True)
+    assert train_set.augment
+    assert not val_set.augment
+
+
+def test_build_dataset_leaves_augmentation_off_when_the_config_does():
+    train_set, val_set = build_split_datasets(augment=False)
+    assert not train_set.augment
+    assert not val_set.augment
 
 
 def test_resolve_device_honours_an_explicit_request():
@@ -263,7 +370,9 @@ def _decreasing_then_rising(config, monkeypatch, losses):
     """Drive train() with a scripted validation curve."""
     calls = iter(losses)
 
-    def fake_epoch(model, loader, device, dice_weight, optimizer):
+    # Tolerant of extra loss-blend parameters: the scripted curve is the point,
+    # and a fake pinned to the exact signature breaks on every loss term added.
+    def fake_epoch(model, loader, device, dice_weight=0.0, optimizer=None, **_):
         if optimizer is not None:
             return 0.1, 0.5
         return next(calls), 0.5
@@ -303,7 +412,7 @@ def test_selecting_on_iou_prefers_higher(monkeypatch):
     """Loss is minimized, IoU maximized; the direction must follow the choice."""
     ious = iter([0.2, 0.9, 0.4])
 
-    def fake_epoch(model, loader, device, dice_weight, optimizer):
+    def fake_epoch(model, loader, device, dice_weight=0.0, optimizer=None, **_):
         return (0.1, 0.5) if optimizer is not None else (0.1, next(ious))
 
     monkeypatch.setattr(train, "_run_epoch", fake_epoch)
@@ -324,7 +433,7 @@ def test_restored_weights_are_the_ones_checkpointed(tmp_path, monkeypatch):
     path = tmp_path / "best.pt"
     calls = iter([0.5, 0.2, 0.9])
 
-    def fake_epoch(model, loader, device, dice_weight, optimizer):
+    def fake_epoch(model, loader, device, dice_weight=0.0, optimizer=None, **_):
         return (0.1, 0.5) if optimizer is not None else (next(calls), 0.5)
 
     monkeypatch.setattr(train, "_run_epoch", fake_epoch)

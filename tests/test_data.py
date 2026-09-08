@@ -130,6 +130,124 @@ def test_take_crop_returns_aligned_image_and_mask():
     assert np.array_equal(mask_crop, mask[50:82, 40:72])
 
 
+def corner_mask(size: int = 32) -> np.ndarray:
+    """A mask no dihedral transform maps onto itself.
+
+    A symmetric probe would let a mismatched image/mask pair pass, because both
+    orderings of a symmetric shape look the same afterwards.
+    """
+    m = np.zeros((size, size), bool)
+    m[2:6, 2:20] = True
+    m[10:14, 2:8] = True
+    return m
+
+
+def ramp(size: int = 4) -> np.ndarray:
+    """A crop whose every pixel differs, so any permutation of it shows."""
+    return np.arange(size * size, dtype=np.float32).reshape(size, size)
+
+
+def test_dihedral_index_zero_is_the_identity():
+    crop = ramp()
+    assert np.array_equal(data.dihedral(crop, 0), crop)
+
+
+def test_dihedral_has_eight_distinct_elements():
+    """Fewer than eight would mean the group is not being covered."""
+    crop = ramp()
+    turned = [data.dihedral(crop, i) for i in range(data.DIHEDRAL_ORDER)]
+    assert len({t.tobytes() for t in turned}) == data.DIHEDRAL_ORDER
+
+
+def test_dihedral_is_closed_under_composition():
+    """Two transforms compose to a third in the group — that is what makes it one."""
+    crop = ramp()
+    orbit = {data.dihedral(crop, i).tobytes() for i in range(data.DIHEDRAL_ORDER)}
+    assert all(
+        data.dihedral(data.dihedral(crop, i), j).tobytes() in orbit
+        for i in range(data.DIHEDRAL_ORDER)
+        for j in range(data.DIHEDRAL_ORDER)
+    )
+
+
+def test_dihedral_preserves_road_pixel_count_exactly():
+    """A grid symmetry permutes pixels; an interpolated rotation would not."""
+    mask = road_mask()
+    assert all(
+        data.dihedral(mask, i).sum() == mask.sum() for i in range(data.DIHEDRAL_ORDER)
+    )
+
+
+def test_dihedral_preserves_dtype_and_shape_on_a_square_crop():
+    mask = road_mask()
+    turned = data.dihedral(mask, 3)
+    assert turned.dtype == mask.dtype
+    assert turned.shape == mask.shape
+
+
+def test_dihedral_leaves_the_channel_axis_alone():
+    """Rotating an (H, W, C) image must not rotate or reorder the channels."""
+    image = data.synthesize_image(corner_mask(), np.random.default_rng(0))
+
+    for index in range(data.DIHEDRAL_ORDER):
+        turned = data.dihedral(image, index)
+        assert turned.shape == image.shape
+        assert all(
+            np.array_equal(turned[..., c], data.dihedral(image[..., c], index))
+            for c in range(image.shape[-1])
+        )
+
+
+def test_dihedral_returns_a_copy_not_a_view():
+    """A view would let a later write reach back into the tile it was cut from."""
+    mask = road_mask()
+    turned = data.dihedral(mask, 3)
+    assert not np.shares_memory(turned, mask)
+    assert turned.flags["C_CONTIGUOUS"]
+
+
+def test_dihedral_rejects_an_index_outside_the_group():
+    with pytest.raises(ValueError, match="outside"):
+        data.dihedral(road_mask(), data.DIHEDRAL_ORDER)
+
+
+def test_dihedral_rejects_an_array_with_too_few_axes():
+    with pytest.raises(ValueError, match="two axes"):
+        data.dihedral(np.zeros(8, np.float32), 0)
+
+
+def test_augment_crop_moves_image_and_mask_in_lockstep():
+    """Different transforms on the two would mislabel every augmented crop.
+
+    The image carries the mask in its channels, so any disagreement between the
+    image transform and the mask transform shows up as a mismatch afterwards.
+    """
+    mask = corner_mask()
+    image = np.repeat(mask.astype(np.float32)[..., None], 3, axis=-1)
+
+    moved = [data.augment_crop(image, mask, i) for i in range(data.DIHEDRAL_ORDER)]
+
+    # The probe only proves anything if the transforms differ on it.
+    assert len({m.tobytes() for _, m in moved}) == data.DIHEDRAL_ORDER
+    assert all(np.array_equal(img[..., 0].astype(bool), m) for img, m in moved)
+
+
+def test_augment_crop_preserves_the_road_pixel_count():
+    mask = corner_mask()
+    image = data.synthesize_image(mask, np.random.default_rng(0))
+    assert all(
+        data.augment_crop(image, mask, i)[1].sum() == mask.sum()
+        for i in range(data.DIHEDRAL_ORDER)
+    )
+
+
+def test_augment_crop_rejects_a_mask_that_does_not_match_its_image():
+    with pytest.raises(ValueError, match="disagree on shape"):
+        data.augment_crop(
+            np.zeros((8, 8, 3), np.float32), np.zeros((4, 4), bool), index=0
+        )
+
+
 def test_registry_yields_a_fresh_instance_each_lookup():
     factory = data.TILE_SOURCE_REGISTRY["synthetic"]
     assert factory() is not factory()
