@@ -15,6 +15,8 @@ TILE_LON  ?= -115.1398
 TILE_SIZE ?= 1024
 TILE_RES  ?= 1.0
 TRAIN_ARGS ?=
+SWEEP_ARGS ?=
+SCRIPTS    ?= scripts
 TESTS   ?= tests
 SRC     ?= $(PKG) $(TESTS)
 
@@ -28,7 +30,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train threshold-sweep fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -71,6 +73,9 @@ roundtrip:  ## Score the OSM->mask->graph round trip on one tile (hits the netwo
 
 train:  ## Train the segmentation model and score it per stage (hits the network)
 	$(UV) run python -m $(PKG).train $(TRAIN_ARGS)
+
+threshold-sweep:  ## Sweep predict_mask's threshold against APLS on a frozen checkpoint (no training)
+	$(UV) run python $(SCRIPTS)/threshold_sweep.py $(SWEEP_ARGS)
 
 examples:  ## Execute the walkthrough notebook to prove it still runs (hits the network)
 	$(UV) run jupyter execute $(EXAMPLES)/*.ipynb
