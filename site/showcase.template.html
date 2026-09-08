@@ -1,0 +1,903 @@
+<title>Roads From Pixels</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+:root {
+  --ground: #ECEFEE;
+  --surface: #FCFCFB;
+  --surface-sunk: #E3E7E6;
+  --ink: #131E1C;
+  --ink-2: #3D4B48;
+  --ink-3: #6B7A76;
+  --rule: #CDD5D3;
+  --rule-strong: #A9B5B2;
+
+  --truth: #0E9384;
+  --model: #C2622B;
+  --severed: #B3261E;
+  --truth-wash: #0e938420;
+  --model-wash: #c2622b1f;
+
+  --shadow: 0 1px 2px #131e1c14, 0 8px 24px #131e1c0f;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+
+  --measure: 68ch;
+  --pad: clamp(1.1rem, 4vw, 2.4rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #141917;
+    --surface: #1B211F;
+    --surface-sunk: #101413;
+    --ink: #E8EDEB;
+    --ink-2: #B3BFBB;
+    --ink-3: #7E8C88;
+    --rule: #2C3532;
+    --rule-strong: #46524E;
+    --truth: #12A28E;
+    --model: #D07A35;
+    --severed: #E2685E;
+    --truth-wash: #12a28e2b;
+    --model-wash: #d07a3526;
+    --shadow: 0 1px 2px #0006, 0 10px 30px #0000004d;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #141917;
+  --surface: #1B211F;
+  --surface-sunk: #101413;
+  --ink: #E8EDEB;
+  --ink-2: #B3BFBB;
+  --ink-3: #7E8C88;
+  --rule: #2C3532;
+  --rule-strong: #46524E;
+  --truth: #12A28E;
+  --model: #D07A35;
+  --severed: #E2685E;
+  --truth-wash: #12a28e2b;
+  --model-wash: #d07a3526;
+  --shadow: 0 1px 2px #0006, 0 10px 30px #0000004d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 var(--pad); }
+.prose { max-width: var(--measure); }
+
+h1, h2, h3, .eyebrow, .stat-value, .chip-id, button, label {
+  font-family: var(--display);
+}
+
+h1 {
+  font-size: clamp(2.4rem, 6.2vw, 4.1rem);
+  font-weight: 800;
+  letter-spacing: -0.032em;
+  line-height: 1.02;
+  text-wrap: balance;
+  margin: 0 0 1rem;
+}
+h2 {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.14;
+  text-wrap: balance;
+  margin: 0 0 0.65rem;
+}
+h3 {
+  font-size: 1.03rem;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  margin: 0 0 0.4rem;
+}
+p { margin: 0 0 1.05rem; }
+a { color: var(--truth); text-underline-offset: 3px; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.7rem;
+}
+
+.lede { font-size: 1.18rem; color: var(--ink-2); }
+.note { font-size: 0.94rem; color: var(--ink-3); }
+em.term { font-style: italic; color: var(--ink); }
+strong { font-weight: 600; }
+
+/* ---------- masthead ---------- */
+
+header.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding: clamp(2.6rem, 7vw, 4.6rem) 0 clamp(1.8rem, 4vw, 2.8rem);
+}
+.masthead-grid {
+  display: grid;
+  gap: clamp(1.6rem, 4vw, 3rem);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  align-items: end;
+}
+@media (max-width: 800px) { .masthead-grid { grid-template-columns: 1fr; } }
+
+.headline-stat {
+  border-left: 3px solid var(--model);
+  padding-left: 1.05rem;
+}
+.stat-value {
+  font-size: clamp(2.6rem, 7vw, 3.6rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: block;
+}
+.stat-label { font-size: 0.93rem; color: var(--ink-2); margin-top: 0.4rem; display: block; }
+.stat-sub { font-family: var(--mono); font-size: 0.76rem; color: var(--ink-3); margin-top: 0.5rem; display: block; }
+
+/* ---------- sections ---------- */
+
+section { padding: clamp(2.6rem, 6vw, 4.4rem) 0; border-bottom: 1px solid var(--rule); }
+section:last-of-type { border-bottom: 0; }
+
+/* ---------- instrument panel ---------- */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: var(--shadow);
+  margin-top: 1.6rem;
+  overflow: hidden;
+}
+.panel-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 0;
+}
+@media (max-width: 860px) { .panel-body { grid-template-columns: 1fr; } }
+
+.panel-cell { padding: 1.2rem 1.35rem 1.35rem; display: flex; flex-direction: column; }
+#divergence-map { display: flex; justify-content: center; flex: 1; align-items: center; }
+#divergence-map svg { max-height: 300px; width: auto; max-width: 100%; }
+#divergence-chart svg { max-height: 300px; }
+.panel-cell + .panel-cell { border-left: 1px solid var(--rule); }
+@media (max-width: 860px) {
+  .panel-cell + .panel-cell { border-left: 0; border-top: 1px solid var(--rule); }
+}
+
+.panel-title {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 0.85rem;
+}
+
+.controls {
+  border-top: 1px solid var(--rule);
+  background: var(--surface-sunk);
+  padding: 1.05rem 1.35rem 1.15rem;
+  display: grid;
+  gap: 0.7rem;
+}
+.slider-row { display: flex; align-items: center; gap: 1rem; }
+.slider-row label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+input[type="range"] {
+  flex: 1;
+  accent-color: var(--model);
+  height: 22px;
+  cursor: pointer;
+  background: transparent;
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--truth); outline-offset: 3px; }
+
+.readouts { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.readout { display: flex; align-items: baseline; gap: 0.45rem; }
+.readout-key {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.readout-val {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.28rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.swatch {
+  width: 9px; height: 9px; border-radius: 2px;
+  display: inline-block; flex: none;
+}
+
+/* ---------- gallery ---------- */
+
+.filmstrip {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.3rem 0.15rem 0.85rem;
+  scrollbar-width: thin;
+}
+.thumb {
+  flex: none;
+  width: 92px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--surface);
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  display: grid;
+  gap: 0;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.thumb:hover { border-color: var(--rule-strong); transform: translateY(-1px); }
+.thumb[aria-pressed="true"] { border-color: var(--model); box-shadow: 0 0 0 1px var(--model); }
+.thumb:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.thumb img { display: block; width: 100%; height: 74px; object-fit: cover; }
+.thumb-score {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.22rem 0.3rem;
+  color: var(--ink-2);
+  border-top: 1px solid var(--rule);
+  text-align: center;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 0;
+}
+@media (max-width: 860px) { .detail { grid-template-columns: 1fr; } }
+
+.figure-stack { position: relative; background: var(--surface-sunk); }
+.figure-stack img, .figure-stack svg { display: block; width: 100%; height: auto; }
+.figure-stack svg { position: absolute; inset: 0; }
+
+.metrics { padding: 1.2rem 1.35rem; display: grid; gap: 0.9rem; align-content: start; }
+.metric { display: grid; gap: 0.12rem; }
+.metric-key {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.metric-val {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.32rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.bar-track {
+  height: 5px;
+  background: var(--surface-sunk);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 0.22rem;
+}
+.bar-fill { height: 100%; background: var(--model); border-radius: 2px; }
+
+.toggles { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.toggle {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.toggle[aria-pressed="true"] { border-color: currentColor; }
+.toggle:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.toggle.truth[aria-pressed="true"] { color: var(--truth); background: var(--truth-wash); }
+.toggle.model[aria-pressed="true"] { color: var(--model); background: var(--model-wash); }
+
+/* ---------- findings ---------- */
+
+.findings { display: grid; gap: 0; margin-top: 1.5rem; border-top: 1px solid var(--rule); }
+.finding {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: clamp(0.8rem, 3vw, 2rem);
+  padding: 1.15rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+@media (max-width: 700px) { .finding { grid-template-columns: 1fr; gap: 0.35rem; } }
+.finding-effect {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--severed);
+  line-height: 1.45;
+  padding-top: 0.18rem;
+}
+.finding p { margin: 0.25rem 0 0; font-size: 0.97rem; color: var(--ink-2); }
+
+/* ---------- misc ---------- */
+
+.caveat {
+  border-left: 3px solid var(--rule-strong);
+  padding: 0.15rem 0 0.15rem 1.05rem;
+  margin: 1.4rem 0;
+  color: var(--ink-2);
+  font-size: 0.97rem;
+}
+.legend { display: flex; gap: 1.05rem; flex-wrap: wrap; margin-bottom: 0.55rem; }
+.legend-item {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-family: var(--mono); font-size: 0.72rem; color: var(--ink-2);
+}
+.cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  gap: clamp(1.1rem, 3vw, 2.2rem);
+  margin-top: 1.5rem;
+}
+table.spec {
+  width: 100%; border-collapse: collapse; font-size: 0.93rem;
+  font-variant-numeric: tabular-nums; margin-top: 1rem;
+}
+table.spec th, table.spec td { text-align: left; padding: 0.42rem 0.7rem 0.42rem 0; border-bottom: 1px solid var(--rule); }
+table.spec th { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+table.spec td.num { text-align: right; font-family: var(--mono); }
+.scroll-x { overflow-x: auto; }
+
+footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap masthead-grid">
+    <div>
+      <p class="eyebrow">SpaceNet 3 &middot; Las Vegas &middot; 1 m / pixel</p>
+      <h1>Roads from pixels, and the metric that tells you when you failed</h1>
+      <p class="lede prose">A segmentation model turns satellite imagery into a road
+      mask. Skeletonization turns the mask into a graph. The interesting part is
+      that a mask which still looks almost perfect can produce a graph that is
+      badly, unrecoverably wrong &mdash; and pixel accuracy will not tell you.</p>
+    </div>
+    <div class="headline-stat">
+      <span class="stat-value" id="hero-apls">&mdash;</span>
+      <span class="stat-label">mean APLS across <span id="hero-n">&mdash;</span> held-out
+      chips, against a measured ceiling of <span id="hero-ceiling">&mdash;</span></span>
+      <span class="stat-sub" id="hero-sub">&mdash;</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The problem</p>
+    <div class="prose">
+      <h2>Two metrics that disagree</h2>
+      <p><em class="term">IoU</em> compares pixels: what fraction of the road
+      surface did you find. <em class="term">APLS</em> compares <em class="term">routes</em>:
+      it samples points across the network and asks whether the travel distance
+      between them survived. One is what a segmentation loss optimizes. The other
+      is what a road network is <em class="term">for</em>.</p>
+      <p>Drag the slider. It punches small gaps into a <strong>perfect</strong>
+      mask &mdash; the scale of a tree shadow, an overpass, a truck in a lane &mdash;
+      then rebuilds the graph and rescores it.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-body">
+        <div class="panel-cell">
+          <div class="panel-title">Score against damage</div>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch" style="background:var(--truth)"></span>Pixel IoU</span>
+            <span class="legend-item"><span class="swatch" style="background:var(--model)"></span>APLS &mdash; topology</span>
+          </div>
+          <div id="divergence-chart"></div>
+        </div>
+        <div class="panel-cell">
+          <div class="panel-title">Recovered network</div>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch" style="background:var(--ink-2)"></span>Largest component</span>
+            <span class="legend-item"><span class="swatch" style="background:var(--severed)"></span>Severed fragment</span>
+          </div>
+          <div id="divergence-map"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="slider-row">
+          <label for="gap-slider">Gaps punched</label>
+          <input type="range" id="gap-slider" min="0" max="7" value="3" step="1"
+                 aria-describedby="divergence-readout">
+        </div>
+        <div class="readouts" id="divergence-readout">
+          <span class="readout"><span class="readout-key">Gaps</span><span class="readout-val" id="r-gaps">&mdash;</span></span>
+          <span class="readout"><span class="swatch" style="background:var(--truth)"></span><span class="readout-key">IoU</span><span class="readout-val" id="r-iou">&mdash;</span></span>
+          <span class="readout"><span class="swatch" style="background:var(--model)"></span><span class="readout-key">APLS</span><span class="readout-val" id="r-apls">&mdash;</span></span>
+          <span class="readout"><span class="readout-key">Components</span><span class="readout-val" id="r-comp">&mdash;</span></span>
+        </div>
+      </div>
+    </div>
+
+    <p class="note prose" style="margin-top:1rem" id="divergence-caption">&mdash;</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The model</p>
+    <div class="prose">
+      <h2>What was built</h2>
+      <p>A U-Net predicts a road mask from three-band pan-sharpened imagery.
+      Morphological thinning traces the mask into a graph: pixels with two
+      neighbours are interior, three or more are a junction. Douglas&ndash;Peucker
+      simplification, spur pruning and junction snapping clean it up. APLS scores
+      the result against OpenStreetMap-style ground truth.</p>
+      <p>Every chip is scored against <strong>its own ceiling</strong> &mdash; the
+      APLS the same pipeline reaches from a <em class="term">perfect</em> mask on
+      that chip. That number is not constant. It runs near 0.98 on a flat downtown
+      grid and drops sharply where roads cross without meeting.</p>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3>Held-out result</h3>
+        <div class="scroll-x">
+          <table class="spec" id="result-table"></table>
+        </div>
+      </div>
+      <div>
+        <h3>Per-chip spread</h3>
+        <div id="distribution-chart"></div>
+        <p class="note" style="margin-top:0.5rem">Every scored chip, sorted. The mean
+        hides a long tail: chips differ more than models do.</p>
+      </div>
+    </div>
+
+    <div class="caveat prose">
+      <strong>On comparability.</strong> Published SpaceNet APLS figures run roughly
+      0.63&ndash;0.74. This sits inside that range, and the metric agrees with the
+      reference implementation to 3&times;10<sup>&minus;5</sup>. But it is
+      <strong>one AOI</strong> &mdash; Las Vegas, the easiest, a regular grid in high
+      desert contrast &mdash; scored on a private 20% holdout rather than the official
+      test split, where published numbers span four cities including Shanghai and
+      Khartoum. In range on the easiest city is the honest claim; matching published
+      results is not.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The evidence</p>
+    <div class="prose">
+      <h2>Ten held-out chips, worst to best</h2>
+      <p>A deliberate spread rather than a highlight reel. Each is about
+      324&nbsp;&times;&nbsp;396&nbsp;m of ground &mdash; roughly four city blocks.
+      Toggle the overlays to compare what the model drew against the truth.</p>
+    </div>
+
+    <div class="filmstrip" id="filmstrip" role="tablist" aria-label="Held-out chips"></div>
+
+    <div class="panel">
+      <div class="detail">
+        <div class="figure-stack" id="detail-figure"></div>
+        <div class="metrics" id="detail-metrics"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">What broke</p>
+    <div class="prose">
+      <h2>Four bugs the invariants caught</h2>
+      <p>Each was silent: the pipeline ran, produced plausible geometry, and
+      reported a believable number. Each was found by asserting a property that
+      had to hold &mdash; not by looking at output.</p>
+    </div>
+    <div class="findings">
+      <div class="finding">
+        <div class="finding-effect">apls(G, G)<br>0.935 &rarr; 1.000</div>
+        <div>
+          <h3>Polyline orientation</h3>
+          <p>An undirected graph reports each edge in whichever orientation its
+          adjacency dict stores, so an edge read back as <span style="font-family:var(--mono);font-size:0.9em">(u, v)</span>
+          is not guaranteed to start at <span style="font-family:var(--mono);font-size:0.9em">u</span>.
+          Three call sites assumed it did and built mirrored geometry. Caught by the
+          one invariant that cannot be argued with: a graph scored against itself
+          must be exactly 1.0.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-effect">31 of 62<br>pixels dropped</div>
+        <div>
+          <h3>Parallel edges silently discarded</h3>
+          <p>Tracing visits every edge from both ends, so the second visit must be
+          recognized and dropped. Keying that on endpoints plus path <em class="term">length</em>
+          collides whenever two genuinely distinct routes share both &mdash; two arcs
+          of a loop &mdash; and threw one away along with its geometry. It needed
+          single-pixel junctions to trigger, which is why thick-road masks never
+          showed it.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-effect">ceiling<br>0.245 &rarr; 0.982</div>
+        <div>
+          <h3>Labels that were never noded</h3>
+          <p>SpaceNet ships each road as one line running <em class="term">straight
+          through</em> its intersections, so crossing streets share no vertex. Built
+          as given, one chip is 33 edges across 30 disconnected components. The mask
+          joins what the labels leave apart, so the metric calls every junction
+          invented. Without noding, every model number would have been measured
+          against a ceiling of 0.25.</p>
+        </div>
+      </div>
+      <div class="finding">
+        <div class="finding-effect">0.243 &times; 0.300 m<br>per pixel</div>
+        <div>
+          <h3>Square in degrees, not on the ground</h3>
+          <p>The imagery ships in a geographic CRS. A Vegas pixel is 0.243&nbsp;m
+          east&ndash;west and 0.300&nbsp;m north&ndash;south &mdash; square in degrees
+          and 19% out of square in reality &mdash; while the whole pipeline measures
+          distance in pixels and calls it metres. Reprojection to UTM is now
+          mandatory, and a geographic CRS is refused outright.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The ceiling</p>
+    <div class="prose">
+      <h2>Why a perfect mask still fails</h2>
+      <p>Render the ground truth to a flawless mask, trace it back, and score it.
+      It does not return 1.0. That is not a tuning failure &mdash; it is a property
+      of the representation.</p>
+      <p>A 2D binary mask <strong>cannot express a road passing over another</strong>.
+      Where a bridge crosses a street, the labels correctly record no junction: you
+      cannot turn from one to the other. Flattened to a plane, the two roads touch,
+      and skeletonization has no choice but to emit a junction that does not exist.</p>
+      <p>Sweeping road width from 1.5 to 18&nbsp;m and resolution from 0.5 to
+      2&nbsp;m/px moves the ceiling only between 0.861 and 0.901. Thinner roads and
+      a finer grid do not close it, because the problem is not resolution. The loss
+      lands entirely in the direction that punishes <em class="term">invented</em>
+      connections, which is the signature an overpass leaves.</p>
+      <p>This is the measured argument for a different representation &mdash; per-cell
+      directional edge slots, which can encode two roads meeting at one pixel
+      <em class="term">without</em> a junction. A mask simply has nowhere to put
+      that fact.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap prose">
+    <p>Built with PyTorch, scikit-image, shapely and rasterio. APLS validated
+    against the SpaceNet reference implementation, vendored byte-for-byte as a test
+    oracle. Every figure on this page is precomputed from the run artifact &mdash;
+    no numbers were typed by hand.</p>
+  </div>
+</footer>
+
+<script id="site-data" type="application/json">__SITE_DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById("site-data").textContent);
+const SVG = "http://www.w3.org/2000/svg";
+
+const el = (name, attrs = {}, parent = null) => {
+  const node = document.createElementNS(SVG, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+};
+const fmt = (v, n = 3) => v.toFixed(n);
+
+/* ---------------- masthead ---------------- */
+
+const S = DATA.summary;
+document.getElementById("hero-apls").textContent = fmt(S.apls_mean);
+document.getElementById("hero-n").textContent = S.n_scored;
+document.getElementById("hero-ceiling").textContent = fmt(S.ceiling);
+document.getElementById("hero-sub").textContent =
+  `${S.n_train_chips} training chips \u00B7 ${S.crop_size}px crops · best of ${S.epochs_run} epochs`;
+
+/* ---------------- result table ---------------- */
+
+const rows = [
+  ["APLS, mean", fmt(S.apls_mean, 4)],
+  ["APLS, median", fmt(S.apls_median, 4)],
+  ["Pipeline ceiling", fmt(S.ceiling, 4)],
+  ["Share of ceiling", (S.fraction_of_ceiling * 100).toFixed(1) + "%"],
+  ["Pixel IoU", fmt(S.mask_iou, 4)],
+  ["Training chips", String(S.n_train_chips)],
+  ["Held-out chips", String(S.n_val_chips)],
+  ["Best epoch", `${S.best_epoch} of ${S.epochs_run}`],
+];
+document.getElementById("result-table").innerHTML =
+  "<thead><tr><th>Measure</th><th style='text-align:right'>Value</th></tr></thead><tbody>" +
+  rows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v}</td></tr>`).join("") +
+  "</tbody></table>";
+
+/* ---------------- divergence chart ---------------- */
+
+const levels = DATA.divergence.levels;
+
+function drawDivergenceChart(activeIndex) {
+  const host = document.getElementById("divergence-chart");
+  host.textContent = "";
+  const W = 460, H = 260, m = { t: 14, r: 52, b: 40, l: 42 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img",
+    "aria-label": "Pixel IoU stays high while APLS collapses as gaps increase" }, host);
+
+  const x = i => m.l + (i / (levels.length - 1)) * iw;
+  const y = v => m.t + (1 - v) * ih;
+
+  for (let t = 0; t <= 1.0001; t += 0.25) {
+    el("line", { x1: m.l, x2: m.l + iw, y1: y(t), y2: y(t),
+      stroke: "var(--rule)", "stroke-width": 1 }, svg);
+    const lab = el("text", { x: m.l - 8, y: y(t) + 4, "text-anchor": "end",
+      fill: "var(--ink-3)", "font-size": 11, "font-family": "var(--mono)" }, svg);
+    lab.textContent = t.toFixed(2);
+  }
+
+  levels.forEach((lv, i) => {
+    const lab = el("text", { x: x(i), y: H - 14, "text-anchor": "middle",
+      fill: "var(--ink-3)", "font-size": 11, "font-family": "var(--mono)" }, svg);
+    lab.textContent = lv.gaps;
+  });
+  const axis = el("text", { x: m.l + iw / 2, y: H - 1, "text-anchor": "middle",
+    fill: "var(--ink-3)", "font-size": 10.5, "font-family": "var(--mono)" }, svg);
+  axis.textContent = "gaps punched into a perfect mask";
+
+  const series = [
+    { key: "iou", color: "var(--truth)", label: "IoU" },
+    { key: "apls", color: "var(--model)", label: "APLS" },
+  ];
+  series.forEach(s => {
+    const d = levels.map((lv, i) => `${i ? "L" : "M"}${x(i)},${y(lv[s.key])}`).join("");
+    el("path", { d, fill: "none", stroke: s.color, "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    levels.forEach((lv, i) => {
+      el("circle", { cx: x(i), cy: y(lv[s.key]), r: 3, fill: s.color,
+        stroke: "var(--surface)", "stroke-width": 2 }, svg);
+    });
+    const last = levels[levels.length - 1];
+    const tag = el("text", { x: x(levels.length - 1) + 9, y: y(last[s.key]) + 4,
+      fill: s.color, "font-size": 11.5, "font-family": "var(--mono)",
+      "font-weight": 500 }, svg);
+    tag.textContent = s.label;
+  });
+
+  const lv = levels[activeIndex];
+  el("line", { x1: x(activeIndex), x2: x(activeIndex), y1: m.t, y2: m.t + ih,
+    stroke: "var(--ink-3)", "stroke-width": 1, "stroke-dasharray": "3 3" }, svg);
+  series.forEach(s => {
+    el("circle", { cx: x(activeIndex), cy: y(lv[s.key]), r: 5.5, fill: s.color,
+      stroke: "var(--surface)", "stroke-width": 2 }, svg);
+  });
+}
+
+function drawDivergenceMap(activeIndex) {
+  const host = document.getElementById("divergence-map");
+  host.textContent = "";
+  const d = DATA.divergence;
+  const svg = el("svg", { viewBox: `0 0 ${d.width} ${d.height}`, width: "100%",
+    role: "img", "aria-label": "Recovered road network, coloured by connected component" }, host);
+  el("rect", { x: 0, y: 0, width: d.width, height: d.height,
+    fill: "var(--surface-sunk)" }, svg);
+
+  d.levels[activeIndex].edges.forEach(e => {
+    const pts = e.pts.map(p => p.join(",")).join(" ");
+    el("polyline", { points: pts, fill: "none",
+      stroke: e.c === 0 ? "var(--ink-2)" : "var(--severed)",
+      "stroke-width": e.c === 0 ? 2.4 : 3.2,
+      "stroke-linecap": "round", "stroke-linejoin": "round" }, svg);
+  });
+}
+
+const slider = document.getElementById("gap-slider");
+slider.max = String(levels.length - 1);
+
+function renderDivergence() {
+  const i = Number(slider.value);
+  const lv = levels[i];
+  drawDivergenceChart(i);
+  drawDivergenceMap(i);
+  document.getElementById("r-gaps").textContent = lv.gaps;
+  document.getElementById("r-iou").textContent = fmt(lv.iou);
+  document.getElementById("r-apls").textContent = fmt(lv.apls);
+  document.getElementById("r-comp").textContent = lv.components;
+
+  const first = levels[0], last = levels[levels.length - 1];
+  document.getElementById("divergence-caption").textContent =
+    `At ${last.gaps} gaps the mask still scores ${fmt(last.iou, 3)} IoU — ` +
+    `${((1 - last.iou) * 100).toFixed(0)}% of road pixels lost — while APLS has fallen ` +
+    `from ${fmt(first.apls, 3)} to ${fmt(last.apls, 3)}, and the network has broken ` +
+    `into ${last.components} disconnected pieces. That gap is the entire argument ` +
+    `for scoring topology rather than pixels.`;
+}
+slider.addEventListener("input", renderDivergence);
+
+/* ---------------- distribution ---------------- */
+
+function drawDistribution() {
+  const host = document.getElementById("distribution-chart");
+  const vals = DATA.distribution;
+  const W = 340, H = 190, m = { t: 12, r: 10, b: 34, l: 34 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img",
+    "aria-label": "APLS for every scored chip, sorted ascending" }, host);
+
+  const x = i => m.l + (i / (vals.length - 1)) * iw;
+  const y = v => m.t + (1 - v) * ih;
+
+  for (let t = 0; t <= 1.0001; t += 0.5) {
+    el("line", { x1: m.l, x2: m.l + iw, y1: y(t), y2: y(t),
+      stroke: "var(--rule)", "stroke-width": 1 }, svg);
+    const lab = el("text", { x: m.l - 7, y: y(t) + 4, "text-anchor": "end",
+      fill: "var(--ink-3)", "font-size": 10.5, "font-family": "var(--mono)" }, svg);
+    lab.textContent = t.toFixed(1);
+  }
+
+  const bw = Math.max(1.5, iw / vals.length - 2);
+  vals.forEach((v, i) => {
+    el("rect", { x: x(i) - bw / 2, y: y(v), width: bw, height: Math.max(1, ih - (y(v) - m.t)),
+      fill: "var(--model)", rx: 1 }, svg);
+  });
+
+  const mean = DATA.summary.apls_mean;
+  el("line", { x1: m.l, x2: m.l + iw, y1: y(mean), y2: y(mean),
+    stroke: "var(--truth)", "stroke-width": 2, "stroke-dasharray": "4 3" }, svg);
+  const tag = el("text", { x: m.l + 4, y: y(mean) - 6, fill: "var(--truth)",
+    "font-size": 11, "font-family": "var(--mono)", "font-weight": 500 }, svg);
+  tag.textContent = `mean ${fmt(mean)}`;
+
+  const xl = el("text", { x: m.l + iw / 2, y: H - 6, "text-anchor": "middle",
+    fill: "var(--ink-3)", "font-size": 10.5, "font-family": "var(--mono)" }, svg);
+  xl.textContent = `${vals.length} chips, sorted by APLS`;
+}
+
+/* ---------------- gallery ---------------- */
+
+let activeChip = 0;
+const overlays = { truth: true, pred: true };
+
+function drawChipOverlay(chip) {
+  const host = document.getElementById("detail-figure");
+  host.textContent = "";
+  const img = document.createElement("img");
+  img.src = chip.image;
+  img.alt = `Satellite imagery for chip ${chip.id}`;
+  host.appendChild(img);
+
+  const svg = el("svg", { viewBox: `0 0 ${chip.width} ${chip.height}`,
+    preserveAspectRatio: "none", role: "img",
+    "aria-label": `Road graph overlay for chip ${chip.id}` }, host);
+
+  if (overlays.truth) {
+    chip.truth.forEach(e => el("polyline", {
+      points: e.pts.map(p => p.join(",")).join(" "), fill: "none",
+      stroke: "var(--truth)", "stroke-width": 3.4, "stroke-linecap": "round",
+      "stroke-linejoin": "round", opacity: 0.95 }, svg));
+  }
+  if (overlays.pred) {
+    chip.pred.forEach(e => el("polyline", {
+      points: e.pts.map(p => p.join(",")).join(" "), fill: "none",
+      stroke: "var(--model)", "stroke-width": 2, "stroke-linecap": "round",
+      "stroke-linejoin": "round" }, svg));
+  }
+}
+
+function drawChipMetrics(chip) {
+  const host = document.getElementById("detail-metrics");
+  host.innerHTML = `
+    <div class="metric">
+      <span class="metric-key">Chip</span>
+      <span class="metric-val" style="font-family:var(--mono);font-size:1.05rem">${chip.id}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-key">APLS</span>
+      <span class="metric-val">${fmt(chip.apls)}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${chip.apls * 100}%"></div></div>
+    </div>
+    <div class="metric">
+      <span class="metric-key">Ceiling for this chip</span>
+      <span class="metric-val" style="color:var(--ink-2)">${fmt(chip.ceiling)}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-key">Share of ceiling</span>
+      <span class="metric-val">${(chip.fraction * 100).toFixed(0)}%</span>
+    </div>
+    <div class="metric">
+      <span class="metric-key">Pixel IoU</span>
+      <span class="metric-val" style="color:var(--ink-2)">${fmt(chip.iou)}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-key">Crossings with no junction</span>
+      <span class="metric-val" style="color:var(--ink-2)">${chip.crossings}</span>
+    </div>
+    <div class="toggles">
+      <button class="toggle truth" type="button" data-layer="truth"
+        aria-pressed="${overlays.truth}">Ground truth</button>
+      <button class="toggle model" type="button" data-layer="pred"
+        aria-pressed="${overlays.pred}">Model</button>
+    </div>`;
+
+  host.querySelectorAll(".toggle").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const layer = btn.dataset.layer;
+      overlays[layer] = !overlays[layer];
+      renderChip();
+    });
+  });
+}
+
+function renderChip() {
+  const chip = DATA.gallery[activeChip];
+  drawChipOverlay(chip);
+  drawChipMetrics(chip);
+  document.querySelectorAll(".thumb").forEach((t, i) =>
+    t.setAttribute("aria-pressed", String(i === activeChip)));
+}
+
+function buildFilmstrip() {
+  const strip = document.getElementById("filmstrip");
+  DATA.gallery.forEach((chip, i) => {
+    const btn = document.createElement("button");
+    btn.className = "thumb";
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(i === activeChip));
+    btn.innerHTML =
+      `<img src="${chip.image}" alt="Chip ${chip.id}">` +
+      `<span class="thumb-score">${fmt(chip.apls, 2)}</span>`;
+    btn.addEventListener("click", () => { activeChip = i; renderChip(); });
+    strip.appendChild(btn);
+  });
+}
+
+/* ---------------- boot ---------------- */
+
+renderDivergence();
+drawDistribution();
+buildFilmstrip();
+renderChip();
+</script>

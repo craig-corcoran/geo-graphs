@@ -180,6 +180,15 @@ def test_evaluate_tile_reports_ceiling_relative_score():
         )
 
 
+def test_evaluate_tiles_records_which_tile_each_report_came_from():
+    """Without the id a per-tile list cannot be traced back to a chip."""
+    source = _FixedSource([synthetic_sample(size=128) for _ in range(3)])
+    report = train.evaluate_tiles(
+        UNet(in_channels=3, widths=(8, 16)), source, source.ids()
+    )
+    assert [r.sample_id for r in report.per_tile] == list(source.ids())
+
+
 def test_evaluate_tiles_aggregates_across_a_set():
     samples = [synthetic_sample(size=128) for _ in range(3)]
     source = _FixedSource(samples)

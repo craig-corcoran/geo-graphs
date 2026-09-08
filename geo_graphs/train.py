@@ -540,6 +540,8 @@ class EvalReport:
     isolates the model.
 
     Attributes:
+        sample_id: Which tile this scored. Without it a per-tile list cannot be
+            traced back to a chip, and pairing two runs relies on list order.
         mask_iou: Pixel agreement between predicted and label mask.
         apls_raw: APLS of the traced graph, before cleanup.
         apls_cleaned: APLS of the final graph.
@@ -549,6 +551,7 @@ class EvalReport:
             achievable score the model actually captured.
     """
 
+    sample_id: str
     mask_iou: float
     apls_raw: float
     apls_cleaned: float
@@ -557,7 +560,11 @@ class EvalReport:
 
 
 def evaluate_tile(
-    model: UNet, sample: data.TileSample, threshold: float = 0.5, device: str = "cpu"
+    model: UNet,
+    sample: data.TileSample,
+    threshold: float = 0.5,
+    device: str = "cpu",
+    sample_id: str = "",
 ) -> EvalReport:
     """Score a model over a whole tile, stage by stage.
 
@@ -566,6 +573,7 @@ def evaluate_tile(
         sample: Tile with imagery, label mask and ground-truth graph.
         threshold: Probability above which a pixel counts as road.
         device: Device string for inference.
+        sample_id: Recorded on the report so results stay traceable.
 
     Returns:
         Per-stage quality for this tile.
@@ -581,6 +589,7 @@ def evaluate_tile(
     ceiling_apls = metrics.apls(sample.truth, ceiling).score
 
     return EvalReport(
+        sample_id=sample_id,
         mask_iou=metrics.iou(predicted, sample.mask),
         apls_raw=metrics.apls(sample.truth, raw).score,
         apls_cleaned=apls_cleaned,
@@ -644,7 +653,11 @@ def evaluate_tiles(
         if sample.truth.number_of_edges() == 0:
             skipped += 1
             continue
-        reports.append(evaluate_tile(model, sample, threshold=threshold, device=device))
+        reports.append(
+            evaluate_tile(
+                model, sample, threshold=threshold, device=device, sample_id=sample_id
+            )
+        )
 
     if not reports:
         return AggregateReport(0, skipped, 0.0, 0.0, 0.0, 0.0, 0.0, ())
