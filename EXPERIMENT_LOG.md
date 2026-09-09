@@ -720,3 +720,123 @@ overlapping skeletons rather than connected routes, so two fragments 20 px apart
 still get no gradient pulling them together, and it cannot touch the 0.9703
 non-planarity ceiling, which is a representation limit rather than a loss one.
 Putting topology in the objective properly is Stage 2 (Sat2Graph).
+
+---
+
+## 2026-09-09 — The published-baseline range on the showcase page was wrong
+
+### What was checked
+
+The showcase page claimed "Published SpaceNet APLS figures run roughly
+0.63–0.74" and that our 0.7247 "sits inside that range." Neither the repo nor
+the page cited a source for it. Checked against two primary sources:
+
+| Source | Dataset | APLS |
+|---|---|---|
+| Van Etten et al., arXiv:1807.01232, Table 4 | SN3 challenge, 4-city total, top 5 | 0.628–0.6663 |
+| Van Etten et al., arXiv:1807.01232, Table 4 | SN3 challenge, **Las Vegas column**, top 5 | 0.771–0.801 |
+| Sat2Graph, ECCV 2020, Table 1 | SpaceNet Roads (Seg-UNet … Sat2Graph-DLA) | 0.5377–0.6443 |
+
+### What the numbers say
+
+The 0.63 lower bound roughly matches the four-city totals; nothing found
+supports 0.74 as an upper bound. More importantly, the four-city total was never
+the comparable figure: we score one AOI. Against the Las Vegas column — the only
+like-for-like comparison available — our 0.7247 sits **0.046 to 0.076 below**
+the top five, not inside their range.
+
+The direction of the error matters. The old text implied a result comparable to
+published work; the corrected comparison says we are below the challenge
+leaders on the easiest city, and still not strictly comparable (private 20%
+holdout, not the official test split).
+
+Unchanged and still verified: agreement with the vendored reference
+implementation, worst case ~3e-5 (`test_against_reference.py`, tolerance pinned
+at 1e-4).
+
+### What it motivates
+
+Every external number quoted on a deliverable page carries its citation in the
+page source from here on. The SN3 Las Vegas column is now a named constant in
+`showcase.template.html` with the arXiv id and table number beside it, so the
+comparison recomputes from `S.apls_mean` rather than being retyped.
+
+`scripts/build_site_data.py` gained `--page-only`, matching
+`build_apls_explainer.py`: a prose change to the showcase template no longer
+costs a 40-chip inference pass.
+
+## 2026-09-09 — Augmentation lands, clDice does not; IoU disagrees with both
+
+Two runs against the 2026-09-08 Vegas baseline, holding everything constant but
+the variable under test: 785 train tiles, 3140 crops, 392 val crops, 256 px,
+batch 8, lr 1e-3, `dice_weight` 0.5, seed 0. Budget raised to `epochs=40,
+patience=10` from 20/5, because the baseline's best epoch was 10 of 16 and the
+curve was still descending when patience cut it.
+
+| run | APLS mean | median | fraction of ceiling | mask IoU | best epoch |
+|---|---|---|---|---|---|
+| baseline | 0.7247 | 0.7595 | 0.7459 | 0.5923 | 10 of 16 |
+| + augmentation | **0.7925** | **0.8620** | **0.8152** | 0.5869 | 21 of 32 |
+| + augmentation + clDice 0.5 | 0.7683 | 0.8216 | 0.7915 | 0.5832 | 21 of 22 † |
+
+Paired over the 40 common held-out tiles:
+
+| comparison | mean Δ APLS | sem | t | 95% CI | better/worse |
+|---|---|---|---|---|---|
+| augmentation vs baseline | **+0.0678** | 0.0199 | **+3.40** | [+0.029, +0.107] | 26 / 14 |
+| clDice on top of augmentation | −0.0242 | 0.0207 | −1.17 | [−0.065, +0.016] | 21 / 19 |
+| both vs baseline | +0.0435 | 0.0217 | +2.01 | [+0.001, +0.086] | 23 / 17 |
+
+### Augmentation
+
+A real effect, and the largest single improvement Stage 1 has produced. The
+overfitting gap it targets closed as predicted: final train/val separation went
+from +0.0803 to +0.0320. The raised budget was necessary rather than incidental
+— the best epoch moved from 10 to 21, so the old `epochs=20, patience=5` would
+have stopped this run before it reached its own optimum. Median gains more than
+mean (+0.103 against +0.068), so it is lifting the middle of the distribution
+rather than rescuing a few disasters.
+
+### The pixel metric points the other way
+
+**Augmentation *lowered* mask IoU, 0.5923 to 0.5869, while raising APLS by
+0.068.** Every previous demonstration of the IoU/APLS divergence in this project
+has been constructed — the gap-punching sweep damages a perfect mask on purpose.
+This one is not constructed: an ordinary training intervention moved the two
+metrics in opposite directions on real held-out imagery. A team tuning on pixel
+overlap would have measured augmentation as a small regression and dropped it.
+That is the project's thesis observed rather than argued, and it is the more
+persuasive form of the claim.
+
+### clDice
+
+No detectable effect at weight 0.5. The confidence interval spans zero, the
+point estimate is negative, and the per-tile split is 21/19 — indistinguishable
+from a coin flip. This is consistent with the 2026-09-08 static analysis, which
+found the term a *worse* discriminator of a severing gap than plain Dice on
+tile-spanning geometry, and it does not vindicate the gradient-concentration
+result that motivated running it anyway: 1.8x gradient mass on the break did
+not convert into topology the metric can see.
+
+Two limits on how far to push this. **Only one blend weight was tested.**
+clDice's total gradient magnitude is about half Dice's, so weight 0.5 replaces a
+substantial share of the pixel signal to buy a weak topological one; a lower
+weight might add the nudge without the dilution, and that is untested.
+† **The clDice arm was truncated** at epoch 22 by an OOM kill against the
+augmentation arm's 32. Both peaked at epoch 21, and the augmentation arm
+improved on none of its epochs 22-32, so the truncation probably cost little —
+but "probably" is doing work in that sentence, and the arms are not equal in
+opportunity.
+
+### What it motivates
+
+Augmentation should become the default; it is measured, it is large, and the
+symmetry it exploits is exact for overhead imagery. clDice stays at weight 0 and
+stays in the tree: it costs nothing off, it is tested, and the weight sweep is
+cheap to run if wanted.
+
+The IoU result sharpens an existing backlog item. `TrainConfig.select_on`
+defaults to `val_loss` — a pixel measure — and this run is direct evidence that
+pixel measures and APLS disagree about which model is better *on real training
+decisions*, not merely on synthetic damage. Selecting the epoch on a cheap APLS
+proxy is now better motivated than it was when it was filed.
