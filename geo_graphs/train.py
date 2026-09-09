@@ -10,7 +10,7 @@ and the shapes line up.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -21,7 +21,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
 
 from . import cleanup, data, metrics, skeleton
-from .model import UNet, predict_mask, segmentation_loss
+from .model import FUSION_REGISTRY, UNet, predict_mask, segmentation_loss
 
 #: Which validation number decides the best epoch.
 #:
@@ -73,6 +73,12 @@ class TrainConfig:
             reflections are exact symmetries rather than approximations.
         cldice_weight: Blend factor for the centreline Dice term. Zero is the
             pixel-only loss.
+        fusion: Registry key naming how the lidar stack reaches the network.
+            Used only when the source supplies one; an imagery-only source
+            builds an imagery-only network whatever this says.
+        coverage: How much lidar each crop is allowed to see, and in what
+            shape. The endpoints ``full`` and ``none`` are the two runs the
+            first stage of this work compares.
     """
 
     train_ids: tuple[str, ...] = ("tile_0", "tile_2")
@@ -94,6 +100,8 @@ class TrainConfig:
     apls_eval_tiles: int = 0
     augment: bool = False
     cldice_weight: float = 0.0
+    fusion: str = "early"
+    coverage: data.CoverageSampler = data.FULL_COVERAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +148,10 @@ class TrainResult:
 #: independent of the crop-window sampling that shares the same run seed.
 _AUGMENT_STREAM = 1
 
+#: Second word of the coverage seed. Same reasoning as :data:`_AUGMENT_STREAM`:
+#: turning coverage sampling on must not shift which windows get drawn.
+_COVERAGE_STREAM = 2
+
 
 class CropDataset(Dataset):
     """Materializes crop windows drawn from one or more tiles.
@@ -161,16 +173,21 @@ class CropDataset(Dataset):
         specs: Sequence[tuple[int, data.CropSpec]],
         augment: bool = False,
         rng: np.random.Generator | None = None,
+        coverage: data.CoverageSampler = data.FULL_COVERAGE,
+        coverage_seed: int = 0,
     ) -> None:
         """
         Args:
             samples: Tiles the crops are cut from.
             specs: ``(sample index, window)`` pairs.
             augment: Draw one of the eight dihedral transforms per crop and
-                apply it to the image and its mask together. Training splits
-                only.
+                apply it to the image, its mask and its lidar together.
+                Training splits only.
             rng: Source of randomness for those draws. Required when
                 ``augment`` is set, so the run stays replayable from its seed.
+            coverage: How much lidar each crop sees. Ignored by samples that
+                carry none.
+            coverage_seed: Seeds the per-crop coverage draw.
 
         Raises:
             ValueError: If ``augment`` is set without an ``rng``.
@@ -180,6 +197,13 @@ class CropDataset(Dataset):
         self.samples = tuple(samples)
         self.specs = tuple(specs)
         self.augment = augment
+        self.coverage = coverage
+        # Keyed on the crop index rather than advanced per visit, unlike the
+        # augmentation stream: a crop's coverage is a fixed property of that
+        # example on every epoch. Resampling it each visit would make a
+        # validation score compare two different datasets from one epoch to
+        # the next, and the curriculum already spreads across crops.
+        self._coverage_seed = coverage_seed
         # Per-epoch variation and reproducibility pull against each other here.
         # Keying the transform on the crop index alone would hand every crop the
         # same rotation on every epoch -- a 1x dataset dressed up as 8x -- while
@@ -195,17 +219,40 @@ class CropDataset(Dataset):
     def __len__(self) -> int:
         return len(self.specs)
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
+    @property
+    def aux_channels(self) -> int:
+        """Channels the aux stack presents: the data channels plus validity.
+
+        Zero when the samples carry no lidar, which is what tells :func:`train`
+        to build an imagery-only network.
+        """
+        if not self.samples or self.samples[0].aux is None:
+            return 0
+        return self.samples[0].aux.shape[-1] + 1
+
+    def __getitem__(self, index: int) -> tuple[Tensor, ...]:
         sample_index, spec = self.specs[index]
-        image, mask = data.take_crop(self.samples[sample_index], spec)
-        if self.augment and self._rng is not None:
-            image, mask = data.augment_crop(
-                image, mask, int(self._rng.integers(data.DIHEDRAL_ORDER))
+        crop = data.take_crop(self.samples[sample_index], spec)
+        if crop.aux is not None:
+            crop = replace(
+                crop,
+                coverage=data.sample_coverage(
+                    self.coverage,
+                    crop.mask.shape,
+                    np.random.default_rng((self._coverage_seed, _COVERAGE_STREAM, index)),
+                ),
             )
-        return (
-            torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))),
-            torch.from_numpy(mask.astype(np.float32))[None],
-        )
+        if self.augment and self._rng is not None:
+            crop = data.augment_crop(crop, int(self._rng.integers(data.DIHEDRAL_ORDER)))
+
+        tensors = [
+            torch.from_numpy(np.ascontiguousarray(crop.image.transpose(2, 0, 1))),
+            torch.from_numpy(crop.mask.astype(np.float32))[None],
+        ]
+        if crop.aux is not None:
+            stack = data.aux_stack(crop).transpose(2, 0, 1)
+            tensors.append(torch.from_numpy(np.ascontiguousarray(stack)))
+        return tuple(tensors)
 
 
 def resolve_device(requested: str = "auto") -> torch.device:
@@ -292,6 +339,8 @@ def build_dataset(
         specs,
         augment=config.augment and is_train,
         rng=np.random.default_rng((config.seed + seed_offset, _AUGMENT_STREAM)),
+        coverage=config.coverage,
+        coverage_seed=config.seed + seed_offset,
     )
 
 
@@ -317,13 +366,17 @@ def _run_epoch(
 
     losses, intersections, unions = [], 0.0, 0.0
     with torch.set_grad_enabled(training):
-        for images, masks in loader:
-            images, masks = images.to(device), masks.to(device)
+        for batch in loader:
+            images, masks = batch[0].to(device), batch[1].to(device)
+            # Length rather than a sentinel tensor: a dataset with no lidar
+            # yields two tensors, and an empty third would have to be shaped
+            # like something the model must then learn to ignore.
+            aux = batch[2].to(device) if len(batch) > 2 else None
 
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
 
-            logits = model(images)
+            logits = model(images, aux)
             loss = segmentation_loss(
                 logits,
                 masks,
@@ -366,20 +419,38 @@ def _epoch_apls(
         source,
         config.val_ids[: config.apls_eval_tiles],
         device=str(device),
+        coverage=config.coverage,
     )
     return report.apls_cleaned if report.n_scored else None
 
 
-def _write_checkpoint(path: Path, state: dict, widths: Sequence[int]) -> None:
-    """Write weights plus the widths needed to rebuild the network.
+def _write_checkpoint(
+    path: Path,
+    state: dict,
+    widths: Sequence[int],
+    aux_channels: int = 0,
+    fusion: str | None = None,
+) -> None:
+    """Write weights plus everything needed to rebuild the network around them.
 
     Args:
         path: Destination; parent directories are created.
         state: A state dict, already on CPU.
         widths: Channel widths the weights were trained with.
+        aux_channels: Width of the auxiliary stack the stem was built for.
+        fusion: Registry key naming how that stack was fused, or ``None`` for
+            an imagery-only network.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": state, "widths": list(widths)}, path)
+    torch.save(
+        {
+            "state_dict": state,
+            "widths": list(widths),
+            "aux_channels": aux_channels,
+            "fusion": fusion,
+        },
+        path,
+    )
 
 
 def train(
@@ -414,15 +485,30 @@ def train(
         val_set = build_dataset(source, config.val_ids, config.n_val_crops, config, 1000)
     else:
         train_set, val_set = datasets
+
+    aux_channels = train_set.aux_channels
+    if aux_channels != val_set.aux_channels:
+        raise ValueError(
+            f"train split has {aux_channels} aux channels and validation has "
+            f"{val_set.aux_channels}; they must come from the same source"
+        )
+    fusion_key = config.fusion if aux_channels else None
     logger.info(
         f"train {len(train_set)} crops, val {len(val_set)} crops, "
-        f"{config.crop_size}px, device {device}"
+        f"{config.crop_size}px, device {device}, "
+        f"{aux_channels} aux channels, coverage {config.coverage.mode}"
+        + (f", {fusion_key} fusion" if fusion_key else "")
     )
 
     train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=config.batch_size)
 
-    model = UNet(in_channels=3, widths=config.widths).to(device)
+    model = UNet(
+        in_channels=3,
+        widths=config.widths,
+        aux_channels=aux_channels,
+        fusion=FUSION_REGISTRY[fusion_key]() if fusion_key else None,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
 
     history: list[EpochMetrics] = []
@@ -488,7 +574,9 @@ def train(
             # epoch 29 of 40 otherwise leaves nothing on disk, and these runs
             # are long enough to lose to an OOM or a closed laptop.
             if checkpoint is not None:
-                _write_checkpoint(checkpoint, best_state, config.widths)
+                _write_checkpoint(
+                    checkpoint, best_state, config.widths, aux_channels, fusion_key
+                )
         else:
             stale_epochs += 1
 
@@ -511,7 +599,9 @@ def train(
         logger.info(f"restored epoch {best_epoch} ({config.select_on} {best_score:.4f})")
 
     if checkpoint is not None:
-        _write_checkpoint(checkpoint, model.state_dict(), config.widths)
+        _write_checkpoint(
+            checkpoint, model.state_dict(), config.widths, aux_channels, fusion_key
+        )
         logger.info(f"wrote {checkpoint}")
 
     return TrainResult(
@@ -552,8 +642,19 @@ def overfit_one_batch(
         dataset = build_dataset(source, config.train_ids[:1], batch_size, config, 0)
     images = torch.stack([dataset[i][0] for i in range(len(dataset))]).to(device)
     masks = torch.stack([dataset[i][1] for i in range(len(dataset))]).to(device)
+    aux_channels = dataset.aux_channels
+    aux = (
+        torch.stack([dataset[i][2] for i in range(len(dataset))]).to(device)
+        if aux_channels
+        else None
+    )
 
-    model = UNet(in_channels=3, widths=config.widths).to(device)
+    model = UNet(
+        in_channels=3,
+        widths=config.widths,
+        aux_channels=aux_channels,
+        fusion=FUSION_REGISTRY[config.fusion]() if aux_channels else None,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     model.train()
 
@@ -561,7 +662,7 @@ def overfit_one_batch(
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)
         loss = segmentation_loss(
-            model(images),
+            model(images, aux),
             masks,
             dice_weight=config.dice_weight,
             cldice_weight=config.cldice_weight,
@@ -583,14 +684,27 @@ def load_checkpoint(path: Path, device: str = "cpu") -> UNet:
         The model in eval mode.
     """
     payload = torch.load(path, map_location=device, weights_only=True)
-    model = UNet(in_channels=3, widths=payload["widths"])
+    # A checkpoint written before fusion existed carries neither key, and an
+    # imagery-only network is exactly what it holds.
+    aux_channels = payload.get("aux_channels", 0)
+    fusion_key = payload.get("fusion")
+    model = UNet(
+        in_channels=3,
+        widths=payload["widths"],
+        aux_channels=aux_channels,
+        fusion=FUSION_REGISTRY[fusion_key]() if fusion_key else None,
+    )
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return model
 
 
 def predict_tile_logits(
-    model: UNet, sample: data.TileSample, device: str = "cpu"
+    model: UNet,
+    sample: data.TileSample,
+    device: str = "cpu",
+    coverage: data.CoverageSampler = data.FULL_COVERAGE,
+    seed: int = 0,
 ) -> np.ndarray:
     """Run the model over a whole tile in one pass.
 
@@ -598,18 +712,40 @@ def predict_tile_logits(
     pixel or two around 396x324 — so the tile is reflection-padded up to the
     model's downsampling factor and the result cropped back. Reflection rather
     than zeros, because a black border invents a hard edge the model would
-    happily segment as a road.
+    happily segment as a road. The aux stack is padded the same way, since a
+    channel that fell out of registration with the imagery would be worse than
+    no channel at all.
 
     Args:
         model: Trained network.
         sample: Tile to segment.
         device: Device string.
+        coverage: How much of the tile's lidar the model is allowed to see.
+            Ignored by an imagery-only network.
+        seed: Seeds the coverage pattern, so a scored tile is reproducible.
 
     Returns:
         ``(H, W)`` float32 logits, at the tile's own size.
+
+    Raises:
+        ValueError: If the model expects lidar and the sample carries none.
     """
     torch_device = torch.device(device)
     model = model.to(torch_device).eval()
+
+    crop = data.whole_tile(sample)
+    aux_batch = None
+    if model.aux_channels:
+        if crop.aux is None:
+            raise ValueError("model was trained with lidar but this sample carries none")
+        crop = replace(
+            crop,
+            coverage=data.sample_coverage(
+                coverage, crop.mask.shape, np.random.default_rng(seed)
+            ),
+        )
+        stack = data.aux_stack(crop).transpose(2, 0, 1)
+        aux_batch = torch.from_numpy(np.ascontiguousarray(stack))[None].to(torch_device)
 
     image = np.ascontiguousarray(sample.image.transpose(2, 0, 1))
     batch = torch.from_numpy(image)[None].to(torch_device)
@@ -620,9 +756,11 @@ def predict_tile_logits(
     pad_w = (-width) % factor
     if pad_h or pad_w:
         batch = nn.functional.pad(batch, (0, pad_w, 0, pad_h), mode="reflect")
+        if aux_batch is not None:
+            aux_batch = nn.functional.pad(aux_batch, (0, pad_w, 0, pad_h), mode="reflect")
 
     with torch.no_grad():
-        logits = model(batch)
+        logits = model(batch, aux_batch)
     return logits[0, 0, :height, :width].cpu().numpy()
 
 
@@ -662,6 +800,7 @@ def evaluate_tile(
     threshold: float = 0.5,
     device: str = "cpu",
     sample_id: str = "",
+    coverage: data.CoverageSampler = data.FULL_COVERAGE,
 ) -> EvalReport:
     """Score a model over a whole tile, stage by stage.
 
@@ -671,11 +810,14 @@ def evaluate_tile(
         threshold: Probability above which a pixel counts as road.
         device: Device string for inference.
         sample_id: Recorded on the report so results stay traceable.
+        coverage: Lidar coverage the model is scored under. Held-out coverage
+            is a condition of the measurement, not a property of the model, so
+            it belongs here rather than on the checkpoint.
 
     Returns:
         Per-stage quality for this tile.
     """
-    logits = predict_tile_logits(model, sample, device=device)
+    logits = predict_tile_logits(model, sample, device=device, coverage=coverage)
     predicted = predict_mask(logits, threshold)
 
     raw = skeleton.graph_from_mask(predicted)
@@ -731,6 +873,7 @@ def evaluate_tiles(
     sample_ids: Sequence[str],
     threshold: float = 0.5,
     device: str = "cpu",
+    coverage: data.CoverageSampler = data.FULL_COVERAGE,
 ) -> AggregateReport:
     """Score a model across many tiles and summarize the spread.
 
@@ -740,6 +883,7 @@ def evaluate_tiles(
         sample_ids: Tiles to score.
         threshold: Probability above which a pixel counts as road.
         device: Device string for inference.
+        coverage: Lidar coverage every tile is scored under.
 
     Returns:
         The aggregate, with every per-tile report retained.
@@ -752,7 +896,12 @@ def evaluate_tiles(
             continue
         reports.append(
             evaluate_tile(
-                model, sample, threshold=threshold, device=device, sample_id=sample_id
+                model,
+                sample,
+                threshold=threshold,
+                device=device,
+                sample_id=sample_id,
+                coverage=coverage,
             )
         )
 
@@ -775,7 +924,10 @@ def evaluate_tiles(
 
 
 def build_source(
-    aoi_root: Path | None, source_key: str, resolution: float
+    aoi_root: Path | None,
+    source_key: str,
+    resolution: float,
+    lidar: bool = False,
 ) -> tuple[data.TileSource, str]:
     """Construct the tile source named on the command line.
 
@@ -783,15 +935,20 @@ def build_source(
         aoi_root: Extracted SpaceNet AOI directory, or ``None`` for synthetic.
         source_key: Registry key, used only when ``aoi_root`` is ``None``.
         resolution: Metres per pixel, for real imagery.
+        lidar: Ask the source for auxiliary channels. Only the synthetic source
+            can fabricate them; SpaceNet ships no lidar, and asking for it
+            there is a mistake worth naming rather than silently ignoring.
 
     Returns:
         ``(source, key)`` where key names which source was built.
     """
     if aoi_root is None:
-        return data.TILE_SOURCE_REGISTRY[source_key](), source_key
+        return data.TILE_SOURCE_REGISTRY[source_key](lidar=lidar), source_key
 
     from . import spacenet
 
+    if lidar:
+        logger.warning("SpaceNet carries no lidar; ignoring the lidar request")
     spacenet.register(data.TILE_SOURCE_REGISTRY)
     return (
         data.TILE_SOURCE_REGISTRY["spacenet"](aoi_root=aoi_root, resolution=resolution),
@@ -882,11 +1039,30 @@ def main() -> None:
         default=defaults.cldice_weight,
         help="blend factor for the centreline Dice term; 0 is the pixel-only loss",
     )
+    parser.add_argument(
+        "--lidar",
+        action="store_true",
+        help="ask the source for auxiliary channels; synthetic sources only",
+    )
+    parser.add_argument(
+        "--fusion",
+        choices=sorted(FUSION_REGISTRY),
+        default=defaults.fusion,
+        help="how the lidar stack reaches the network",
+    )
+    parser.add_argument(
+        "--coverage",
+        choices=sorted(data.COVERAGE_PATTERNS),
+        default=defaults.coverage.mode,
+        help="how much lidar each crop sees; full and none are the endpoints",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
 
-    source, source_key = build_source(args.aoi_root, args.source, args.resolution)
+    source, source_key = build_source(
+        args.aoi_root, args.source, args.resolution, lidar=args.lidar
+    )
     train_ids, val_ids = split_ids(source.ids(), args.val_fraction, args.seed)
     logger.info(f"{source_key}: {len(train_ids)} train tiles, {len(val_ids)} val tiles")
 
@@ -908,11 +1084,13 @@ def main() -> None:
         apls_eval_tiles=args.apls_eval_tiles,
         augment=args.augment,
         cldice_weight=args.cldice_weight,
+        fusion=args.fusion,
+        coverage=data.CoverageSampler(mode=args.coverage),
     )
     result = train(config, source=source, checkpoint=args.checkpoint)
 
     scored = config.val_ids[: args.max_eval_tiles]
-    report = evaluate_tiles(result.model, source, scored)
+    report = evaluate_tiles(result.model, source, scored, coverage=config.coverage)
 
     logger.info(
         f"best epoch {result.best_epoch} of {len(result.history)}"

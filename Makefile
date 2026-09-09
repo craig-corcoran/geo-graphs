@@ -15,7 +15,10 @@ TILE_LON  ?= -115.1398
 TILE_SIZE ?= 1024
 TILE_RES  ?= 1.0
 TRAIN_ARGS ?=
+COVERAGE_OUT ?= outputs
 SWEEP_ARGS ?=
+SHOWCASE_ARGS ?=
+EXPLAINER_ARGS ?=
 SCRIPTS    ?= scripts
 TESTS   ?= tests
 SRC     ?= $(PKG) $(TESTS)
@@ -30,7 +33,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train threshold-sweep fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -74,11 +77,23 @@ roundtrip:  ## Score the OSM->mask->graph round trip on one tile (hits the netwo
 train:  ## Train the segmentation model and score it per stage (hits the network)
 	$(UV) run python -m $(PKG).train $(TRAIN_ARGS)
 
+coverage-endpoints:  ## Train the same fused config at full and at zero lidar coverage (hits the network; writes COVERAGE_OUT)
+	$(UV) run python -m $(PKG).train --lidar --coverage full \
+	  --out $(COVERAGE_OUT)/coverage_full.json $(TRAIN_ARGS)
+	$(UV) run python -m $(PKG).train --lidar --coverage none \
+	  --out $(COVERAGE_OUT)/coverage_none.json $(TRAIN_ARGS)
+
 threshold-sweep:  ## Sweep predict_mask's threshold against APLS on a frozen checkpoint (no training)
 	$(UV) run python $(SCRIPTS)/threshold_sweep.py $(SWEEP_ARGS)
 
 examples:  ## Execute the walkthrough notebook to prove it still runs (hits the network)
 	$(UV) run jupyter execute $(EXAMPLES)/*.ipynb
+
+showcase:  ## Rebuild the showcase page from the checkpoint (writes outputs/showcase.html)
+	$(UV) run python $(SCRIPTS)/build_site_data.py $(SHOWCASE_ARGS)
+
+apls-explainer:  ## Rebuild the APLS explainer page (writes outputs/apls_explainer.html)
+	$(UV) run python $(SCRIPTS)/build_apls_explainer.py $(EXPLAINER_ARGS)
 
 fetch-spacenet:  ## Download a SpaceNet tarball into DATA_DIR (large; resumable)
 	@mkdir -p $(DATA_DIR)

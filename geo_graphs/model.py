@@ -4,6 +4,11 @@ Deliberately small and plain. The interesting part of this project is the graph
 extraction and the topology-aware metric, not the architecture, so this is a
 textbook U-Net with a configurable width rather than anything clever.
 
+The one pluggable piece is how an auxiliary channel stack — lidar height and
+ground-return intensity, with an availability indicator — reaches the network.
+That goes through :data:`FUSION_REGISTRY`, because the choice is a measurement
+rather than a preference.
+
 Convention: the model emits **logits**, not probabilities. Keeping the sigmoid
 out of the forward pass is what lets the loss use the numerically stable
 ``binary_cross_entropy_with_logits``; callers wanting a mask apply
@@ -12,7 +17,9 @@ out of the forward pass is what lets the loss use the numerically stable
 
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import torch
@@ -31,6 +38,120 @@ def conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
     )
 
 
+def mask_unobserved(aux: Tensor) -> Tensor:
+    """Zero the aux data channels wherever the trailing validity channel is 0.
+
+    The one guarantee that makes the fill value unobservable. Whatever a data
+    pipeline wrote into unmeasured positions — zero, a sentinel, uninitialized
+    memory — is multiplied away here, so a model cannot learn to read the
+    coverage mask off the data channels or to treat one particular fill as
+    evidence about the ground. Every fusion implementation calls this before
+    the aux stack reaches a convolution.
+
+    Args:
+        aux: ``(N, K + 1, H, W)``, data channels followed by the availability
+            indicator in ``{0, 1}``.
+
+    Returns:
+        The same tensor with unobserved data zeroed and the indicator kept.
+
+    Raises:
+        ValueError: If the stack has no room for both data and an indicator.
+    """
+    if aux.ndim != 4 or aux.shape[1] < 2:
+        raise ValueError(f"expected (N, K + 1, H, W) with K >= 1; got {tuple(aux.shape)}")
+    return torch.cat([aux[:, :-1] * aux[:, -1:], aux[:, -1:]], dim=1)
+
+
+@runtime_checkable
+class Fusion(Protocol):
+    """How an auxiliary channel stack reaches the segmentation network.
+
+    A stage rather than a fixed choice because the alternatives are not
+    equivalent under domain shift, and that cannot be settled in-domain. nDSM
+    and roughness are physical measurements in metres: they do not move with
+    atmosphere, sun angle, sensor calibration or season, and RGB moves with all
+    of them. Early fusion entangles the two in the first convolution, so they
+    cannot be regularized or augmented differently; a two-encoder alternative
+    can, at the cost of parameters. Which trade wins is a measurement, so it
+    goes through a registry.
+    """
+
+    def stem_channels(self, image_channels: int, aux_channels: int) -> int:
+        """Input channels the encoder stem must be built to accept."""
+        ...
+
+    def fuse(self, image: Tensor, aux: Tensor) -> Tensor:
+        """Combine imagery and the aux stack into the stem's input tensor."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class EarlyFusion:
+    """Concatenate the aux stack onto the input stem.
+
+    The cheap end of the design space: one wider first convolution and no other
+    change to the network. It ties imagery and geometry together immediately,
+    which is efficient and is exactly the property that makes it suspect across
+    areas — see :class:`Fusion`.
+    """
+
+    def stem_channels(self, image_channels: int, aux_channels: int) -> int:
+        """Image channels plus the whole aux stack, indicator included."""
+        return image_channels + aux_channels
+
+    def fuse(self, image: Tensor, aux: Tensor) -> Tensor:
+        """Concatenate along the channel axis, fill masked out first."""
+        return torch.cat([image, mask_unobserved(aux)], dim=1)
+
+
+# Structural typing is checked where a class enters a Protocol-typed slot, and
+# the registry's values are factories rather than instances, so nothing else
+# here would check EarlyFusion at all.
+_: type[Fusion] = EarlyFusion
+
+#: Selects a fusion strategy by config key. Values are factories, so each
+#: lookup yields a fresh instance rather than a shared one. ``dual`` — separate
+#: encoders fused at each decoder scale — is deliberately absent until there
+#: are coverage curves to compare it against.
+FUSION_REGISTRY: dict[str, Callable[..., Fusion]] = {
+    "early": lambda **kw: EarlyFusion(**kw),
+}
+
+
+def seed_stem_channels(stem: nn.Conv2d, image_channels: int) -> None:
+    """Initialize a widened stem's extra inputs from the mean of the image ones.
+
+    Concatenating channels onto the stem changes the shape of its weight, so a
+    pretrained RGB encoder cannot be loaded into it unmodified and a fresh
+    random block would swamp the pretrained response on the first steps.
+    Seeding each new channel with the mean over the RGB weights keeps the
+    layer's output distribution close to what it was, which is the standard
+    recipe for widening a pretrained stem.
+
+    Nothing happens when the stem is no wider than the imagery, so a fusion
+    strategy that does not touch the stem needs no special case.
+
+    Args:
+        stem: The network's first convolution, modified in place.
+        image_channels: How many of its input channels are imagery.
+    """
+    if stem.weight.shape[1] <= image_channels:
+        return
+    with torch.no_grad():
+        stem.weight[:, image_channels:] = stem.weight[:, :image_channels].mean(
+            dim=1, keepdim=True
+        )
+
+
+def _first_conv(block: nn.Module) -> nn.Conv2d:
+    """The first convolution inside a block, which for encoder 0 is the stem."""
+    for module in block.modules():
+        if isinstance(module, nn.Conv2d):
+            return module
+    raise ValueError("block contains no convolution")
+
+
 class UNet(nn.Module):
     """Encoder-decoder with skip connections, emitting one logit per pixel.
 
@@ -39,22 +160,48 @@ class UNet(nn.Module):
         widths: Channel count at each encoder level. Depth is
             ``len(widths) - 1`` downsamples, so the input side must be
             divisible by ``2 ** (len(widths) - 1)``.
+        aux_channels: Channels in the auxiliary stack, availability indicator
+            included. Zero is the imagery-only network.
+        fusion: How that stack reaches the network. Required when
+            ``aux_channels`` is non-zero and meaningless otherwise.
+
+    Raises:
+        ValueError: If ``widths`` is degenerate, or if ``aux_channels`` and
+            ``fusion`` disagree about whether there is anything to fuse.
     """
 
     def __init__(
-        self, in_channels: int = 3, widths: Sequence[int] = (32, 64, 128, 256)
+        self,
+        in_channels: int = 3,
+        widths: Sequence[int] = (32, 64, 128, 256),
+        aux_channels: int = 0,
+        fusion: Fusion | None = None,
     ) -> None:
         super().__init__()
         if len(widths) < 2:
             raise ValueError("widths needs at least an encoder and a bottleneck")
+        if (aux_channels > 0) != (fusion is not None):
+            raise ValueError(
+                f"aux_channels={aux_channels} and fusion={fusion!r} disagree; "
+                "supply both or neither"
+            )
 
         self.widths = tuple(widths)
+        self.in_channels = in_channels
+        self.aux_channels = aux_channels
+        self.fusion = fusion
         self.pool = nn.MaxPool2d(2)
 
-        channels = [in_channels, *self.widths[:-2]]
+        stem_in = (
+            fusion.stem_channels(in_channels, aux_channels)
+            if fusion is not None
+            else in_channels
+        )
+        channels = [stem_in, *self.widths[:-2]]
         self.encoders = nn.ModuleList(
             conv_block(a, b) for a, b in zip(channels, self.widths[:-1], strict=True)
         )
+        seed_stem_channels(_first_conv(self.encoders[0]), in_channels)
         self.bottleneck = conv_block(self.widths[-2], self.widths[-1])
 
         reversed_widths = list(reversed(self.widths))
@@ -70,15 +217,29 @@ class UNet(nn.Module):
         """Number of downsampling steps; input dimensions must divide by 2**depth."""
         return len(self.widths) - 1
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Map a batch of images to per-pixel logits.
+    def forward(self, x: Tensor, aux: Tensor | None = None) -> Tensor:
+        """Map a batch of images, and optionally lidar, to per-pixel logits.
 
         Args:
             x: ``(N, C, H, W)`` float tensor.
+            aux: ``(N, K + 1, H, W)`` auxiliary stack, the last channel being
+                the availability indicator. Required exactly when the network
+                was built with a fusion stage.
 
         Returns:
             ``(N, 1, H, W)`` logits.
+
+        Raises:
+            ValueError: If ``aux`` and the configured fusion disagree.
         """
+        if self.fusion is None:
+            if aux is not None:
+                raise ValueError("aux supplied to a network built without fusion")
+        elif aux is None:
+            raise ValueError("network was built with fusion but got no aux stack")
+        else:
+            x = self.fusion.fuse(x, aux)
+
         skips = []
         for encoder in self.encoders:
             x = encoder(x)

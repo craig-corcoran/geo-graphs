@@ -7,6 +7,8 @@ from torch.nn import functional as F
 
 from geo_graphs import model as model_module
 from geo_graphs.model import (
+    FUSION_REGISTRY,
+    Fusion,
     UNet,
     logit,
     predict_mask,
@@ -69,6 +71,131 @@ def test_rejects_a_degenerate_width_list():
 def test_accepts_non_rgb_input():
     out = UNet(in_channels=8, widths=(8, 16))(torch.randn(1, 8, 32, 32))
     assert out.shape == (1, 1, 32, 32)
+
+
+def fused_model(aux_channels: int = 3, widths=(8, 16)) -> UNet:
+    """A tiny fused network, in eval mode so batch norm is deterministic."""
+    return UNet(
+        in_channels=3,
+        widths=widths,
+        aux_channels=aux_channels,
+        fusion=FUSION_REGISTRY["early"](),
+    ).eval()
+
+
+def aux_batch(
+    observed: torch.Tensor, fill: float, size: int = 32, channels: int = 2
+) -> torch.Tensor:
+    """An aux stack whose unobserved data channels are set to ``fill``."""
+    values = torch.randn(1, channels, size, size)
+    values = torch.where(observed > 0, values, torch.full_like(values, fill))
+    return torch.cat([values, observed], dim=1)
+
+
+def test_the_fill_value_under_an_invalid_pixel_cannot_reach_the_logits():
+    """The single guarantee the availability channel exists to make.
+
+    Two crops that differ only in what was written where nothing was measured
+    must be indistinguishable to the model. If they are not, the network is
+    reading the coverage mask off the data channels, and every number from the
+    coverage sweep is measuring the fill rather than the lidar.
+    """
+    torch.manual_seed(0)
+    model = fused_model()
+
+    observed = torch.zeros(1, 1, 32, 32)
+    observed[:, :, :16, :] = 1.0
+    # The observed half is identical between the two; only the fill differs.
+    torch.manual_seed(1)
+    quiet = aux_batch(observed, fill=0.0)
+    torch.manual_seed(1)
+    loud = aux_batch(observed, fill=-999.0)
+
+    image = torch.randn(1, 3, 32, 32)
+    with torch.no_grad():
+        assert torch.equal(model(image, quiet), model(image, loud))
+    # The probe is only meaningful if the two stacks actually differ.
+    assert not torch.equal(quiet, loud)
+
+
+def test_observed_lidar_does_reach_the_logits():
+    """The other half of the leakage test: masking must not mask everything."""
+    torch.manual_seed(0)
+    model = fused_model()
+    observed = torch.ones(1, 1, 32, 32)
+    image = torch.randn(1, 3, 32, 32)
+
+    flat = torch.cat([torch.zeros(1, 2, 32, 32), observed], dim=1)
+    raised = torch.cat([torch.ones(1, 2, 32, 32), observed], dim=1)
+    with torch.no_grad():
+        assert not torch.equal(model(image, flat), model(image, raised))
+
+
+def test_mask_unobserved_zeroes_data_and_keeps_the_indicator():
+    aux = torch.ones(1, 3, 4, 4) * 5.0
+    aux[:, -1] = 1.0
+    aux[:, -1, :2, :] = 0.0
+
+    masked = model_module.mask_unobserved(aux)
+
+    assert (masked[:, :2, :2, :] == 0.0).all()
+    assert (masked[:, :2, 2:, :] == 5.0).all()
+    assert torch.equal(masked[:, -1], aux[:, -1])
+
+
+def test_mask_unobserved_rejects_a_stack_with_no_room_for_an_indicator():
+    with pytest.raises(ValueError, match="K >= 1"):
+        model_module.mask_unobserved(torch.zeros(1, 1, 4, 4))
+
+
+def test_early_fusion_widens_the_stem_by_the_whole_aux_stack():
+    fusion = FUSION_REGISTRY["early"]()
+    assert fusion.stem_channels(3, 3) == 6
+    assert model_module._first_conv(fused_model().encoders[0]).in_channels == 6
+
+
+def test_the_new_stem_channels_start_at_the_mean_of_the_rgb_ones():
+    """So a pretrained RGB encoder survives being widened."""
+    torch.manual_seed(0)
+    stem = model_module._first_conv(fused_model(aux_channels=3).encoders[0])
+    expected = stem.weight[:, :3].mean(dim=1)
+    assert torch.allclose(stem.weight[:, 3], expected)
+    assert torch.allclose(stem.weight[:, 4], expected)
+    assert torch.allclose(stem.weight[:, 5], expected)
+
+
+def test_a_fused_model_still_maps_input_resolution_to_output():
+    out = fused_model()(torch.randn(2, 3, 32, 32), torch.randn(2, 3, 32, 32))
+    assert out.shape == (2, 1, 32, 32)
+
+
+def test_a_fused_model_refuses_to_run_without_its_aux_stack():
+    with pytest.raises(ValueError, match="got no aux stack"):
+        fused_model()(torch.randn(1, 3, 32, 32))
+
+
+def test_an_imagery_only_model_refuses_an_aux_stack():
+    """Silently ignoring it would hide a run that thought it was using lidar."""
+    with pytest.raises(ValueError, match="built without fusion"):
+        UNet(in_channels=3, widths=(8, 16))(
+            torch.randn(1, 3, 32, 32), torch.randn(1, 3, 32, 32)
+        )
+
+
+def test_aux_channels_and_fusion_must_agree():
+    with pytest.raises(ValueError, match="disagree"):
+        UNet(widths=(8, 16), aux_channels=3)
+    with pytest.raises(ValueError, match="disagree"):
+        UNet(widths=(8, 16), fusion=FUSION_REGISTRY["early"]())
+
+
+def test_fusion_registry_yields_a_fresh_instance_each_lookup():
+    factory = FUSION_REGISTRY["early"]
+    assert factory() is not factory()
+
+
+def test_fusion_registry_entries_satisfy_the_protocol():
+    assert all(isinstance(factory(), Fusion) for factory in FUSION_REGISTRY.values())
 
 
 def test_loss_at_initialization_is_about_ln_two():

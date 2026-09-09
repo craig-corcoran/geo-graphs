@@ -10,6 +10,10 @@ snapping radius, same pair score. It recomputes rather than imports only because
 `_directional` returns aggregated numbers and throws the paths away, and the
 paths are the whole point here.
 
+Emits both the JSON payload and the explainer page, by substituting the payload
+into `site/apls_explainer.template.html`. `--page-only` rebuilds just the page
+from an existing payload, so editing the template costs no inference.
+
 Reads a frozen checkpoint. No training, no network.
 """
 
@@ -44,6 +48,12 @@ PAIRS_PER_DIRECTION = 14
 
 #: Longest side of the embedded background image, in pixels.
 IMAGE_MAX_SIDE = 700
+
+#: Control point spacing along every edge, in metres. Matches `metrics.apls`.
+SPACING = 50.0
+
+#: Furthest a control point may move to reach the target graph, in metres.
+MAX_SNAP = 25.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,28 +224,37 @@ def _graph_edges(G: nx.MultiGraph) -> list[list[list[float]]]:
     ]
 
 
-def main() -> None:
-    """Command line entry point."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=Path("outputs/vegas_best.pt"))
-    parser.add_argument("--aoi-root", type=Path, default=Path("data/AOI_2_Vegas"))
-    parser.add_argument("--resolution", type=float, default=1.0)
-    parser.add_argument("--threshold", type=float, default=0.05)
-    parser.add_argument("--pairs", type=int, default=PAIRS_PER_DIRECTION)
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--out", type=Path, default=Path("outputs/apls_explainer.json"))
-    args = parser.parse_args()
+def build(
+    aoi_root: Path,
+    checkpoint: Path,
+    resolution: float,
+    threshold: float,
+    n_pairs: int,
+    device: str,
+) -> dict:
+    """Assemble the whole payload: one entry per tile in :data:`TILES`.
 
-    source, _ = train.build_source(args.aoi_root, "spacenet", args.resolution)
-    model = train.load_checkpoint(args.checkpoint, device=args.device)
+    Args:
+        aoi_root: Root of the extracted SpaceNet AOI.
+        checkpoint: Frozen model checkpoint to predict with.
+        resolution: Ground resolution the tiles are resampled to, in m/px.
+        threshold: Probability above which a pixel is road.
+        n_pairs: Control point pairs to export per tile per direction.
+        device: Torch device for inference.
+
+    Returns:
+        A JSON-ready dict of the scoring constants and the per-tile geometry.
+    """
+    source, _ = train.build_source(aoi_root, "spacenet", resolution)
+    model = train.load_checkpoint(checkpoint, device=device)
     rng = np.random.default_rng(0)
 
     tiles = []
     for sample_id, caption in TILES.items():
         sample = source.load(sample_id)
-        logits = train.predict_tile_logits(model, sample, device=args.device)
+        logits = train.predict_tile_logits(model, sample, device=device)
         proposal = cleanup.clean(
-            skeleton.graph_from_mask(predict_mask(logits, args.threshold))
+            skeleton.graph_from_mask(predict_mask(logits, threshold))
         )
         result = metrics.apls(sample.truth, proposal)
         logger.info(f"{sample_id}: {result}")
@@ -255,22 +274,66 @@ def main() -> None:
                 "prop_to_gt": round(result.prop_to_gt, 4),
                 "directions": {
                     "gt_to_prop": build_direction(
-                        sample.truth, proposal, 50.0, 25.0, 10.0, args.pairs, rng
+                        sample.truth, proposal, SPACING, MAX_SNAP, 10.0, n_pairs, rng
                     ),
                     "prop_to_gt": build_direction(
-                        proposal, sample.truth, 50.0, 25.0, 10.0, args.pairs, rng
+                        proposal, sample.truth, SPACING, MAX_SNAP, 10.0, n_pairs, rng
                     ),
                 },
             }
         )
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(
-        json.dumps(
-            {"threshold": args.threshold, "spacing": 50.0, "max_snap": 25.0, "tiles": tiles}
-        )
+    return {
+        "threshold": threshold,
+        "spacing": SPACING,
+        "max_snap": MAX_SNAP,
+        "tiles": tiles,
+    }
+
+
+def main() -> None:
+    """Command line entry point."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", type=Path, default=Path("outputs/vegas_best.pt"))
+    parser.add_argument("--aoi-root", type=Path, default=Path("data/AOI_2_Vegas"))
+    parser.add_argument("--resolution", type=float, default=1.0)
+    parser.add_argument("--threshold", type=float, default=0.05)
+    parser.add_argument("--pairs", type=int, default=PAIRS_PER_DIRECTION)
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--out", type=Path, default=Path("outputs/apls_explainer.json"))
+    parser.add_argument(
+        "--template", type=Path, default=Path("site/apls_explainer.template.html")
     )
-    logger.info(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)")
+    parser.add_argument("--html", type=Path, default=Path("outputs/apls_explainer.html"))
+    parser.add_argument(
+        "--page-only",
+        action="store_true",
+        help="Rebuild the page from an existing --out JSON, skipping inference.",
+    )
+    args = parser.parse_args()
+
+    if args.page_only:
+        blob = args.out.read_text()
+    else:
+        payload = build(
+            args.aoi_root,
+            args.checkpoint,
+            args.resolution,
+            args.threshold,
+            args.pairs,
+            args.device,
+        )
+        blob = json.dumps(payload, separators=(",", ":"))
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(blob)
+        logger.info(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB)")
+
+    if args.template.exists():
+        # </script> anywhere inside the payload would close the host tag early.
+        safe = blob.replace("</", "<\\/")
+        args.html.parent.mkdir(parents=True, exist_ok=True)
+        args.html.write_text(args.template.read_text().replace("__APLS_DATA__", safe))
+        logger.info(f"wrote {args.html} ({args.html.stat().st_size / 1e6:.2f} MB)")
 
 
 if __name__ == "__main__":

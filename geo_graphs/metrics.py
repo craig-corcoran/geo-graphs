@@ -1,10 +1,35 @@
 """Scoring: pixel-level IoU, and the topology-aware APLS.
 
-APLS (Average Path Length Similarity, from the SpaceNet challenge) samples
-control points along the ground-truth network, snaps each to the nearest point
-on the proposal, and compares shortest-path distances between every pair. A
-proposal can score well on IoU and badly here: severing one edge leaves almost
-every pixel intact while making a whole set of paths infinite.
+APLS (Average Path Length Similarity, from the SpaceNet challenge) scores
+*routes*, not roads. Control points are dropped every ``spacing`` metres along
+the source graph and snapped onto the nearest edge of the target graph, within
+``max_snap``. For a pair of them, ``l_a`` is the shortest path between the two
+through the source and ``l_b`` the shortest path between their snapped
+positions through the target, and the pair scores::
+
+    1 - min(1, abs(l_a - l_b) / l_a)
+
+A direction's score is the mean over pairs, and the two directions are combined
+with a harmonic mean: ``gt_to_prop`` punishes roads that are missing,
+``prop_to_gt`` punishes roads that were invented, and a proposal has to do both.
+
+Three properties to know before reading a number off this module:
+
+* **A route the target cannot make scores 0, not a partial penalty.** No path
+  between the snapped points, or no edge within ``max_snap`` to snap to at all,
+  and there is no ``l_b`` to subtract. This is why severing one edge is so
+  expensive: it zeroes every pair whose route crossed it, while leaving almost
+  every pixel intact.
+* **The denominator is always the source length**, so the two directions are
+  different measurements rather than one symmetric comparison. A route that
+  comes back twice as long scores 0; one that comes back half as long keeps 0.5.
+* **Geometry reaches the score only through snapping.** A road drawn nearly
+  ``max_snap`` off its true line still snaps, still measures the same length,
+  and still scores 1. Displacement below that threshold is deliberately
+  invisible; see EXPERIMENT_LOG.md 2026-09-01 (later).
+
+``make apls-explainer`` builds a page that draws real scored pairs, with their
+routes, on real tiles.
 """
 
 from dataclasses import dataclass

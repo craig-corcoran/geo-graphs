@@ -1,0 +1,1230 @@
+<title>APLS, Pair by Pair</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+:root {
+  --ground: #ECEFEE;
+  --surface: #FCFCFB;
+  --surface-sunk: #E3E7E6;
+  --ink: #131E1C;
+  --ink-2: #3D4B48;
+  --ink-3: #6B7A76;
+  --rule: #CDD5D3;
+  --rule-strong: #A9B5B2;
+
+  --truth: #0E9384;
+  --model: #C2622B;
+  --severed: #B3261E;
+  --truth-wash: #0e938420;
+  --model-wash: #c2622b1f;
+  --severed-wash: #b3261e14;
+
+  --shadow: 0 1px 2px #131e1c14, 0 8px 24px #131e1c0f;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+
+  --measure: 68ch;
+  --pad: clamp(1.1rem, 4vw, 2.4rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #141917;
+    --surface: #1B211F;
+    --surface-sunk: #101413;
+    --ink: #E8EDEB;
+    --ink-2: #B3BFBB;
+    --ink-3: #7E8C88;
+    --rule: #2C3532;
+    --rule-strong: #46524E;
+    --truth: #12A28E;
+    --model: #D07A35;
+    --severed: #E2685E;
+    --truth-wash: #12a28e2b;
+    --model-wash: #d07a3526;
+    --severed-wash: #e2685e1f;
+    --shadow: 0 1px 2px #0006, 0 10px 30px #0000004d;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #141917;
+  --surface: #1B211F;
+  --surface-sunk: #101413;
+  --ink: #E8EDEB;
+  --ink-2: #B3BFBB;
+  --ink-3: #7E8C88;
+  --rule: #2C3532;
+  --rule-strong: #46524E;
+  --truth: #12A28E;
+  --model: #D07A35;
+  --severed: #E2685E;
+  --truth-wash: #12a28e2b;
+  --model-wash: #d07a3526;
+  --severed-wash: #e2685e1f;
+  --shadow: 0 1px 2px #0006, 0 10px 30px #0000004d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 var(--pad); }
+.prose { max-width: var(--measure); }
+
+h1, h2, h3, .eyebrow, .stat-value, button, label { font-family: var(--display); }
+
+h1 {
+  font-size: clamp(2.3rem, 6vw, 3.9rem);
+  font-weight: 800;
+  letter-spacing: -0.032em;
+  line-height: 1.03;
+  text-wrap: balance;
+  margin: 0 0 1rem;
+}
+h2 {
+  font-size: clamp(1.45rem, 3vw, 1.95rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-wrap: balance;
+  margin: 0 0 0.65rem;
+}
+h3 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  margin: 0 0 0.35rem;
+}
+p { margin: 0 0 1.05rem; }
+p:last-child { margin-bottom: 0; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.7rem;
+}
+.lede { font-size: 1.17rem; color: var(--ink-2); }
+.note { font-size: 0.93rem; color: var(--ink-3); }
+em.term { font-style: italic; color: var(--ink); }
+strong { font-weight: 600; }
+
+/* Inline symbols. `v` is a variable, `q` a literal quantity. */
+.v, .q {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  font-variant-numeric: tabular-nums;
+}
+.v { color: var(--ink); }
+.v sub { font-size: 0.72em; }
+.t-truth { color: var(--truth); }
+.t-model { color: var(--model); }
+.t-severed { color: var(--severed); }
+
+header.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding: clamp(2.4rem, 6vw, 4.2rem) 0 clamp(1.7rem, 4vw, 2.6rem);
+}
+section { padding: clamp(2.3rem, 5.5vw, 3.8rem) 0; border-bottom: 1px solid var(--rule); }
+section:last-of-type { border-bottom: 0; }
+
+/* ---------- mechanism figure ---------- */
+
+figure.mech { margin: 1.7rem 0 0; }
+figure.mech svg { display: block; width: 100%; height: auto; }
+figcaption {
+  font-size: 0.9rem;
+  color: var(--ink-3);
+  max-width: var(--measure);
+  margin-top: 0.6rem;
+}
+
+/* ---------- instrument ---------- */
+
+.instrument {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: var(--shadow);
+  margin-top: 1.5rem;
+  overflow: hidden;
+}
+.instrument[data-dir="gt_to_prop"] {
+  --src: var(--truth); --tgt: var(--model);
+  --src-wash: var(--truth-wash); --tgt-wash: var(--model-wash);
+}
+.instrument[data-dir="prop_to_gt"] {
+  --src: var(--model); --tgt: var(--truth);
+  --src-wash: var(--model-wash); --tgt-wash: var(--truth-wash);
+}
+
+.strip-title {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 0.6rem;
+}
+
+/* tile chooser */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.55rem;
+  padding: 1rem 1.1rem 1.05rem;
+  border-bottom: 1px solid var(--rule);
+}
+.tile {
+  text-align: left;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--surface);
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.tile:hover { border-color: var(--rule-strong); transform: translateY(-1px); }
+.tile[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.tile:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.tile img { display: block; width: 100%; height: 52px; object-fit: cover; }
+.tile-text { padding: 0.45rem 0.55rem 0.35rem; }
+.tile-id {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.tile-what { font-family: var(--display); font-weight: 600; font-size: 0.82rem; display: block; }
+.tile-why { font-size: 0.78rem; line-height: 1.35; color: var(--ink-3); display: block; }
+.tile-nums {
+  display: flex;
+  gap: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--rule);
+  padding: 0.28rem 0.55rem;
+  color: var(--ink-3);
+}
+.tile-nums b { color: var(--ink); font-weight: 600; }
+
+/* direction chooser */
+.dirs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+  padding: 1rem 1.1rem 0;
+}
+@media (max-width: 620px) { .dirs { grid-template-columns: 1fr; } }
+.dirbtn {
+  text-align: left;
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 2px;
+  background: var(--surface);
+  color: inherit;
+  padding: 0.6rem 0.8rem 0.7rem;
+  cursor: pointer;
+  display: grid;
+  gap: 0.1rem;
+}
+.dirbtn:hover { border-color: var(--rule-strong); }
+.dirbtn:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.dirbtn[data-dir="gt_to_prop"] { border-left-color: var(--truth); }
+.dirbtn[data-dir="prop_to_gt"] { border-left-color: var(--model); }
+.dirbtn[aria-pressed="false"] { background: var(--surface-sunk); opacity: 0.72; }
+.dirbtn[aria-pressed="true"][data-dir="gt_to_prop"] { border-color: var(--truth); background: var(--truth-wash); }
+.dirbtn[aria-pressed="true"][data-dir="prop_to_gt"] { border-color: var(--model); background: var(--model-wash); }
+.dirbtn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
+.dirbtn-key {
+  font-family: var(--mono);
+  font-size: 0.73rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+.dirbtn-val {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.dirbtn-name { font-family: var(--body); font-size: 0.94rem; line-height: 1.3; }
+.dirbtn-why { font-family: var(--body); font-size: 0.86rem; color: var(--ink-3); line-height: 1.35; }
+
+.harmonic {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  padding: 0.6rem 1.1rem 0;
+}
+.harmonic b { color: var(--ink); font-weight: 600; }
+
+/* role strip: what source and target mean right now */
+.roles {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: stretch;
+  gap: 0.55rem;
+  margin: 0.75rem 1.1rem 0;
+}
+@media (max-width: 620px) { .roles { grid-template-columns: 1fr; } }
+.role {
+  border: 1px solid var(--rule);
+  border-top: 3px solid var(--role-color);
+  border-radius: 2px;
+  padding: 0.45rem 0.65rem 0.55rem;
+  background: var(--surface-sunk);
+  display: grid;
+  gap: 0.05rem;
+}
+.role.src { --role-color: var(--src); }
+.role.tgt { --role-color: var(--tgt); }
+.role-key {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.role-val {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: var(--role-color);
+  letter-spacing: -0.01em;
+}
+.role-note { font-size: 0.85rem; line-height: 1.35; color: var(--ink-2); }
+.role-arrow {
+  align-self: center;
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  color: var(--ink-3);
+  padding: 0 0.1rem;
+}
+@media (max-width: 620px) { .role-arrow { transform: rotate(90deg); justify-self: center; } }
+
+/* three-column working area */
+.instr-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) 15rem;
+  gap: 0;
+  margin-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+@media (max-width: 1020px) {
+  .instr-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .cell-pairs { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) { .instr-body { grid-template-columns: 1fr; } }
+
+.cell { padding: 1rem 1.1rem 1.15rem; min-width: 0; }
+.cell + .cell { border-left: 1px solid var(--rule); }
+@media (max-width: 1020px) {
+  .cell-pairs { border-left: 0; border-top: 1px solid var(--rule); }
+}
+@media (max-width: 720px) {
+  .cell + .cell { border-left: 0; border-top: 1px solid var(--rule); }
+}
+
+.canvas-wrap {
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  max-width: min(100%, 480px);
+  margin-inline: auto;
+}
+.canvas-wrap svg { display: block; width: 100%; height: auto; }
+
+.toggles { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.7rem; }
+.toggle {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  padding: 0.28rem 0.5rem;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-3);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.toggle[aria-pressed="true"] { border-color: currentColor; color: var(--ink-2); }
+.toggle:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.toggle.truth[aria-pressed="true"] { color: var(--truth); background: var(--truth-wash); }
+.toggle.model[aria-pressed="true"] { color: var(--model); background: var(--model-wash); }
+.toggle.source[aria-pressed="true"] { color: var(--src); background: var(--src-wash); }
+
+/* arithmetic panel */
+.lengths { display: grid; gap: 0.4rem; margin: 0 0 0.9rem; }
+.length {
+  display: grid;
+  grid-template-columns: 2.1rem auto 1fr;
+  align-items: baseline;
+  gap: 0.5rem;
+  border-bottom: 1px dotted var(--rule);
+  padding-bottom: 0.3rem;
+}
+.length-sym { font-family: var(--mono); font-size: 0.9rem; color: var(--ink-3); }
+.length-val {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.15rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.length-via { font-size: 0.83rem; color: var(--ink-3); line-height: 1.3; }
+
+.math {
+  font-family: var(--mono);
+  font-size: 0.83rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.75;
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.7rem 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink-2);
+}
+.math .final { color: var(--ink); font-weight: 600; }
+.math .final.zero { color: var(--severed); }
+.math .cmt { color: var(--ink-3); }
+
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid var(--severed);
+  color: var(--severed);
+  background: var(--severed-wash);
+  border-radius: 2px;
+  padding: 0.2rem 0.45rem;
+  margin-bottom: 0.7rem;
+}
+.tent { margin-top: 0.85rem; }
+.tent svg { display: block; width: 100%; height: auto; }
+
+/* pair list */
+.pair-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.3rem;
+  max-height: 34rem;
+  overflow-y: auto;
+  align-content: start;
+  scrollbar-width: thin;
+}
+.pair {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+  column-gap: 0.5rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  text-align: left;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--surface);
+  color: inherit;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.pair:hover { border-color: var(--rule-strong); }
+.pair:focus-visible { outline: 2px solid var(--truth); outline-offset: 2px; }
+.pair[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.pair.zero[aria-pressed="true"] { border-color: var(--severed); box-shadow: 0 0 0 1px var(--severed); }
+.pair-score {
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  grid-row: 1 / 3;
+}
+.pair.zero .pair-score { color: var(--severed); }
+.pair-meta {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pair.zero .pair-meta { color: var(--severed); }
+.pair-bar { height: 4px; background: var(--surface-sunk); border-radius: 2px; overflow: hidden; }
+.pair-bar i { display: block; height: 100%; background: var(--ink-2); }
+.pair.zero .pair-bar i { background: var(--severed); }
+
+/* ---------- notes ---------- */
+
+.notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: clamp(1.1rem, 3vw, 2.1rem);
+  margin-top: 1.5rem;
+}
+.note-card { border-top: 2px solid var(--rule-strong); padding-top: 0.7rem; }
+.note-card p { font-size: 0.95rem; color: var(--ink-2); margin: 0.3rem 0 0; }
+
+.caveat {
+  border-left: 3px solid var(--rule-strong);
+  padding: 0.15rem 0 0.15rem 1.05rem;
+  margin: 1.5rem 0 0;
+  color: var(--ink-2);
+  font-size: 0.96rem;
+}
+footer { padding: 2.2rem 0 3.2rem; color: var(--ink-3); font-size: 0.89rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">APLS &middot; Average Path Length Similarity</p>
+    <h1>APLS scores a road graph by the travel distances it supports.</h1>
+    <p class="lede prose">APLS picks two points, measures how far you have to travel
+    between them in the ground truth, measures the same trip in the prediction, and scores
+    the difference. It never compares a predicted road to a real one. Every other property
+    of the metric follows from that choice. This page draws the actual routes, on real
+    tiles, from the same code path that produces the reported number.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The mechanism</p>
+    <div class="prose">
+      <h2>One pair, measured twice</h2>
+      <p>Start with a <em class="term">source</em> graph and a <em class="term">target</em>
+      graph. Walk every edge of the source and drop a <em class="term">control point</em>
+      every <span class="q" id="spec-spacing">50</span>&nbsp;m. These are the endpoints
+      APLS will use, and nothing about them depends on the target. Take two of
+      them. The shortest path between them through the source is
+      <span class="v">l<sub>a</sub></span>.</p>
+      <p>Now find those same two ground positions in the target graph. Each one snaps to
+      the nearest point on the nearest target edge, provided that edge comes within
+      <span class="q" id="spec-snap">25</span>&nbsp;m. The shortest path between the snapped
+      points is <span class="v">l<sub>b</sub></span>. The pair scores</p>
+      <p style="font-family:var(--mono);font-size:0.95rem;text-align:center;margin:1.2rem 0">
+      1 &minus; min(1, |l<sub>a</sub> &minus; l<sub>b</sub>| / l<sub>a</sub>)</p>
+      <p>and the direction&rsquo;s score is the mean over every pair. A missing route scores
+      zero. The metric has no graded penalty short of that.</p>
+    </div>
+
+    <figure class="mech">
+      <svg viewBox="0 0 770 372" role="img" aria-label="The same two control points measured in the source graph and again in the target graph: 250 metres becomes 350 metres because one street is missing from the prediction, scoring 0.60">
+        <defs>
+          <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6"
+                  markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <text x="20" y="20" font-family="var(--mono)" font-size="11" letter-spacing="1.4"
+              fill="var(--truth)">SOURCE &middot; GROUND TRUTH</text>
+        <text x="410" y="20" font-family="var(--mono)" font-size="11" letter-spacing="1.4"
+              fill="var(--model)">TARGET &middot; MODEL PROPOSAL</text>
+
+        <rect x="20" y="32" width="340" height="240" fill="var(--surface-sunk)"
+              stroke="var(--rule)"></rect>
+        <rect x="410" y="32" width="340" height="240" fill="var(--surface-sunk)"
+              stroke="var(--rule)"></rect>
+
+        <!-- source network -->
+        <g stroke="var(--truth)" stroke-width="2.5" stroke-opacity="0.55" fill="none">
+          <line x1="40" y1="92" x2="340" y2="92"></line>
+          <line x1="40" y1="202" x2="340" y2="202"></line>
+          <line x1="130" y1="52" x2="130" y2="242"></line>
+          <line x1="270" y1="52" x2="270" y2="242"></line>
+        </g>
+        <!-- control points: a dot every 50 m, drawn as zero-length round dashes -->
+        <g stroke="var(--truth)" stroke-width="5" stroke-linecap="round"
+           stroke-dasharray="0 50" fill="none">
+          <line x1="40" y1="92" x2="340" y2="92"></line>
+          <line x1="40" y1="202" x2="340" y2="202"></line>
+          <line x1="130" y1="52" x2="130" y2="242"></line>
+          <line x1="270" y1="52" x2="270" y2="242"></line>
+        </g>
+        <polyline points="80,202 130,202 130,92 220,92" fill="none" stroke="var(--truth)"
+                  stroke-width="9" stroke-opacity="0.3" stroke-linecap="round"
+                  stroke-linejoin="round"></polyline>
+        <polyline points="80,202 130,202 130,92 220,92" fill="none" stroke="var(--truth)"
+                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <circle cx="80" cy="202" r="5" fill="var(--surface)" stroke="var(--truth)"
+                stroke-width="2.4"></circle>
+        <circle cx="220" cy="92" r="5" fill="var(--surface)" stroke="var(--truth)"
+                stroke-width="2.4"></circle>
+        <text x="72" y="192" text-anchor="end" font-family="var(--mono)" font-size="12"
+              font-weight="600" fill="var(--ink)">A</text>
+        <text x="228" y="86" font-family="var(--mono)" font-size="12" font-weight="600"
+              fill="var(--ink)">B</text>
+
+        <!-- the same ground positions, located again in the target -->
+        <g color="var(--ink-3)">
+          <line x1="366" y1="152" x2="402" y2="152" stroke="currentColor" stroke-width="1.4"
+                marker-end="url(#arw)"></line>
+        </g>
+
+        <!-- target network: the model missed the left cross-street -->
+        <line x1="520" y1="52" x2="520" y2="242" stroke="var(--truth)" stroke-width="2.5"
+              stroke-opacity="0.35" stroke-dasharray="5 5"></line>
+        <text x="528" y="262" font-family="var(--mono)" font-size="10" fill="var(--truth)"
+              fill-opacity="0.85">street the model missed</text>
+        <g stroke="var(--model)" stroke-width="2.5" stroke-opacity="0.6" fill="none">
+          <line x1="436" y1="98" x2="736" y2="98"></line>
+          <line x1="436" y1="208" x2="736" y2="208"></line>
+          <line x1="666" y1="58" x2="666" y2="248"></line>
+        </g>
+        <polyline points="476,208 666,208 666,98 616,98" fill="none" stroke="var(--model)"
+                  stroke-width="9" stroke-opacity="0.3" stroke-linecap="round"
+                  stroke-linejoin="round"></polyline>
+        <polyline points="476,208 666,208 666,98 616,98" fill="none" stroke="var(--model)"
+                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <g stroke="var(--ink-2)" stroke-width="1.3" stroke-dasharray="2 2">
+          <line x1="470" y1="202" x2="476" y2="208"></line>
+          <line x1="610" y1="92" x2="616" y2="98"></line>
+        </g>
+        <circle cx="470" cy="202" r="5" fill="none" stroke="var(--truth)"
+                stroke-width="1.6" stroke-opacity="0.7"></circle>
+        <circle cx="610" cy="92" r="5" fill="none" stroke="var(--truth)"
+                stroke-width="1.6" stroke-opacity="0.7"></circle>
+        <circle cx="476" cy="208" r="3.4" fill="var(--model)"></circle>
+        <circle cx="616" cy="98" r="3.4" fill="var(--model)"></circle>
+        <text x="486" y="226" font-family="var(--mono)" font-size="10" fill="var(--ink-3)">snapped 8 m &middot; limit 25 m</text>
+        <text x="462" y="192" text-anchor="end" font-family="var(--mono)" font-size="12"
+              font-weight="600" fill="var(--ink)">A</text>
+        <text x="620" y="84" font-family="var(--mono)" font-size="12" font-weight="600"
+              fill="var(--ink)">B</text>
+
+        <text x="20" y="296" font-family="var(--mono)" font-size="14" fill="var(--truth)"
+              font-weight="600">l<tspan font-size="10" dy="3">a</tspan><tspan dy="-3"> = 250 m</tspan></text>
+        <text x="410" y="296" font-family="var(--mono)" font-size="14" fill="var(--model)"
+              font-weight="600">l<tspan font-size="10" dy="3">b</tspan><tspan dy="-3"> = 350 m</tspan></text>
+
+        <line x1="20" y1="316" x2="750" y2="316" stroke="var(--rule)"></line>
+        <text x="20" y="346" font-family="var(--mono)" font-size="15" fill="var(--ink)">1 &minus; min(1, |250 &minus; 350| / 250)<tspan fill="var(--ink-3)">  =  1 &minus; 0.40  =  </tspan><tspan font-weight="600">0.60</tspan></text>
+      </svg>
+      <figcaption>Schematic, drawn to scale at one unit per metre. Both panels show the
+      same 340&nbsp;&times;&nbsp;240&nbsp;m of ground. The detour costs
+      100&nbsp;m against a 250&nbsp;m reference, so the pair keeps 0.60. Every other pair
+      whose route used that street pays the same way.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The instrument</p>
+    <div class="prose">
+      <h2>The routes behind four tile scores</h2>
+      <p>Four held-out SpaceNet chips, each about 323&nbsp;&times;&nbsp;396&nbsp;m of Las
+      Vegas. Pick a tile, pick a direction, then pick a pair from the list: the map draws
+      the route the metric actually took through each graph, and the panel shows the
+      arithmetic with the numbers substituted in.</p>
+    </div>
+
+    <div class="instrument" id="instrument" data-dir="gt_to_prop">
+      <div class="tiles" id="tiles"></div>
+
+      <div class="dirs" id="dirs">
+        <button class="dirbtn" type="button" data-dir="gt_to_prop" aria-pressed="true">
+          <span class="dirbtn-head">
+            <span class="dirbtn-key">gt &rarr; prop</span>
+            <span class="dirbtn-val" id="dir-val-gt">&mdash;</span>
+          </span>
+          <span class="dirbtn-name">Control points from the <strong>ground truth</strong>,
+          routes checked in the prediction.</span>
+          <span class="dirbtn-why">Falls when the model missed real roads. Recall-like.</span>
+        </button>
+        <button class="dirbtn" type="button" data-dir="prop_to_gt" aria-pressed="false">
+          <span class="dirbtn-head">
+            <span class="dirbtn-key">prop &rarr; gt</span>
+            <span class="dirbtn-val" id="dir-val-prop">&mdash;</span>
+          </span>
+          <span class="dirbtn-name">Control points from the <strong>prediction</strong>,
+          routes checked in the ground truth.</span>
+          <span class="dirbtn-why">Falls when the model invented roads. Precision-like.</span>
+        </button>
+      </div>
+
+      <p class="harmonic" id="harmonic">&mdash;</p>
+
+      <div class="roles">
+        <div class="role src">
+          <span class="role-key">Source</span>
+          <span class="role-val" id="role-src">&mdash;</span>
+          <span class="role-note" id="role-src-note">&mdash;</span>
+        </div>
+        <span class="role-arrow" aria-hidden="true">&rarr;</span>
+        <div class="role tgt">
+          <span class="role-key">Target</span>
+          <span class="role-val" id="role-tgt">&mdash;</span>
+          <span class="role-note" id="role-tgt-note">&mdash;</span>
+        </div>
+      </div>
+
+      <div class="instr-body">
+        <div class="cell">
+          <div class="strip-title">Selected pair on the ground</div>
+          <div class="canvas-wrap" id="canvas"></div>
+          <div class="toggles" id="layers">
+            <button class="toggle" type="button" data-layer="image" aria-pressed="true">Imagery</button>
+            <button class="toggle truth" type="button" data-layer="truth" aria-pressed="true">Ground truth</button>
+            <button class="toggle model" type="button" data-layer="proposal" aria-pressed="true">Prediction</button>
+            <button class="toggle source" type="button" data-layer="control" aria-pressed="true">Control points</button>
+          </div>
+          <p class="note" id="canvas-note" style="margin-top:0.55rem">&mdash;</p>
+        </div>
+
+        <div class="cell">
+          <div class="strip-title">How this pair scored</div>
+          <div id="verdict"></div>
+          <div class="lengths" id="lengths"></div>
+          <div class="math" id="math"></div>
+          <div class="tent" id="tent"></div>
+        </div>
+
+        <div class="cell cell-pairs">
+          <div class="strip-title" id="pairs-title">Sampled pairs</div>
+          <div class="pair-list" id="pairs"></div>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:0.7rem">Fourteen pairs per direction, sampled across
+    the score range rather than uniformly: a tile whose pairs mostly score 1.00 would
+    otherwise never show what cost it the rest. The full metric scores every pair of
+    control points, tens of thousands per tile.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Consequences</p>
+    <div class="prose">
+      <h2>Four things that follow</h2>
+    </div>
+    <div class="notes">
+      <div class="note-card">
+        <h3>Two directions, because one is gameable</h3>
+        <p>Predict roads everywhere and every real trip survives: <span class="q">gt&nbsp;&rarr;&nbsp;prop</span>
+        stays high. Predict almost nothing and the few control points you do place match
+        exactly: <span class="q">prop&nbsp;&rarr;&nbsp;gt</span> stays high. The reported
+        APLS is the harmonic mean of the two, which is dragged toward the worse one, so
+        neither trick pays.</p>
+      </div>
+      <div class="note-card">
+        <h3>A missing route scores zero</h3>
+        <p>If the target has no path between the snapped points (or no edge within
+        <span class="q" id="spec-snap-2">25</span>&nbsp;m of a control point to snap to at
+        all), there is no <span class="v">l<sub>b</sub></span> to subtract. The metric does
+        not guess one. Partial credit here would hide the failure the metric exists to
+        catch.</p>
+      </div>
+      <div class="note-card">
+        <h3>One severed road poisons a whole tile</h3>
+        <p>Control points are dense and pairs are drawn across the entire network, so a
+        single break that splits the graph in two zeroes every pair with one endpoint on
+        each side. Split <span class="v">n</span> points evenly and
+        <span class="v">k</span>(<span class="v">n</span>&minus;<span class="v">k</span>) of
+        the <span class="v">n</span>(<span class="v">n</span>&minus;1)/2 pairs cross the
+        break: with 66 control points, 1089 of 2145 pairs (just over half) go to zero at
+        once.</p>
+      </div>
+      <div class="note-card">
+        <h3>The penalty is asymmetric</h3>
+        <p>The denominator is <span class="v">l<sub>a</sub></span>, the
+        <em class="term">source</em> length. A route that comes back half as long keeps
+        0.50; one that comes back twice as long keeps 0.00, and anything longer is clamped
+        there. Detours are punished harder than shortcuts, and a long enough detour is
+        indistinguishable from no road at all.</p>
+      </div>
+    </div>
+    <div class="caveat prose">
+      <strong>What the score does not say.</strong> A high APLS says travel distances
+      agree at the sampled pairs. It does not say the geometry is right: a road drawn
+      20&nbsp;m off its true line still snaps within the 25&nbsp;m limit and still measures
+      the same length. That is deliberate, since a road network is judged by the trips it
+      supports. It also means APLS and a pixel metric can disagree in both directions
+      without either being wrong.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap prose">
+    <p>Every path, length and score on this page is exported from the scoring run itself:
+    the same Dijkstra calls, densification and snapping radius the reported metric uses, on
+    a frozen checkpoint at a mask threshold of
+    <span class="q" id="spec-threshold">&mdash;</span>. Only the schematic at the top is
+    illustrative, and its caption says so.</p>
+  </div>
+</footer>
+
+<script id="apls-data" type="application/json">__APLS_DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById("apls-data").textContent);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+const el = (name, attrs = {}, parent = null) => {
+  const node = document.createElementNS(SVGNS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+};
+const fmt = (v, n = 3) => v.toFixed(n);
+const poly = pts => pts.map(p => p.join(",")).join(" ");
+
+/* Which graph plays which role, per direction. */
+const ROLES = {
+  gt_to_prop: {
+    src: "ground truth", tgt: "model prediction",
+    srcKey: "truth", tgtKey: "proposal",
+  },
+  prop_to_gt: {
+    src: "model prediction", tgt: "ground truth",
+    srcKey: "proposal", tgtKey: "truth",
+  },
+};
+
+const state = {
+  tile: 0,
+  dir: "gt_to_prop",
+  pair: 0,
+  layers: { image: true, truth: true, proposal: true, control: true },
+};
+
+const tile = () => DATA.tiles[state.tile];
+const dirData = () => tile().directions[state.dir];
+const roles = () => ROLES[state.dir];
+
+/* Why this pair opens selected: the largest detour that still has a route, so the
+   first thing on screen shows both paths rather than a blank target. */
+function defaultPair(d) {
+  let worst = -1, idx = d.pairs.length - 1;
+  d.pairs.forEach((p, i) => {
+    if (p.path_b.length && 1 - p.score > worst) { worst = 1 - p.score; idx = i; }
+  });
+  return idx;
+}
+
+/* Why a pair scored zero: snapping failed, or nothing connects the landed points. */
+function failure(d, p) {
+  if (p.path_b.length) return null;
+  const unsnapped = [p.a1, p.a2].filter(i => d.landed[i] === null);
+  if (unsnapped.length) return "snap";
+  return "route";
+}
+
+/* ---------------- tiles ---------------- */
+
+function buildTiles() {
+  const host = document.getElementById("tiles");
+  DATA.tiles.forEach((t, i) => {
+    const [what, why] = t.caption.split(/:\s*/);
+    const btn = document.createElement("button");
+    btn.className = "tile";
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(i === state.tile));
+    btn.innerHTML =
+      `<img src="${t.image}" alt="">` +
+      `<span class="tile-text"><span class="tile-id">${t.id}</span>` +
+      `<span class="tile-what">${what}</span>` +
+      `<span class="tile-why">${why || ""}</span></span>` +
+      `<span class="tile-nums"><span>apls <b>${fmt(t.apls, 2)}</b></span>` +
+      `<span>gt&rarr;prop <b>${fmt(t.gt_to_prop, 2)}</b></span>` +
+      `<span>prop&rarr;gt <b>${fmt(t.prop_to_gt, 2)}</b></span></span>`;
+    btn.addEventListener("click", () => {
+      state.tile = i;
+      state.pair = defaultPair(dirData());
+      renderAll();
+    });
+    host.appendChild(btn);
+  });
+}
+
+/* ---------------- canvas ---------------- */
+
+function drawGraph(svg, edges, color, opts) {
+  edges.forEach(e => el("polyline", Object.assign({
+    points: poly(e), fill: "none", stroke: color,
+    "stroke-linecap": "round", "stroke-linejoin": "round",
+    "vector-effect": "non-scaling-stroke",
+  }, opts), svg));
+}
+
+function renderCanvas() {
+  const t = tile(), d = dirData(), p = d.pairs[state.pair], r = roles();
+  const host = document.getElementById("canvas");
+  host.textContent = "";
+
+  const fail = failure(d, p);
+  const svg = el("svg", {
+    viewBox: `0 0 ${t.width} ${t.height}`,
+    preserveAspectRatio: "xMidYMid meet",
+    role: "img",
+    "aria-label": `Tile ${t.id}: the route between two control points through the ` +
+      `${r.src}, and the same trip through the ${r.tgt}` +
+      (fail ? ", which has no route between them" : ""),
+  }, host);
+
+  el("rect", { x: 0, y: 0, width: t.width, height: t.height, fill: "var(--surface-sunk)" }, svg);
+  if (state.layers.image) {
+    el("image", {
+      href: t.image, x: 0, y: 0, width: t.width, height: t.height,
+      preserveAspectRatio: "none", opacity: 0.55,
+    }, svg);
+  }
+
+  /* The source graph carries a wash under it, so which network the control points
+     came from stays visible when the direction toggles. */
+  const srcEdges = r.srcKey === "truth" ? t.truth : t.proposal;
+  if (state.layers[r.srcKey]) {
+    drawGraph(svg, srcEdges, "var(--src)", { "stroke-width": 6, "stroke-opacity": 0.17 });
+  }
+  if (state.layers.truth) {
+    drawGraph(svg, t.truth, "var(--truth)", { "stroke-width": 1.5, "stroke-opacity": 0.75 });
+  }
+  if (state.layers.proposal) {
+    drawGraph(svg, t.proposal, "var(--model)", { "stroke-width": 1.5, "stroke-opacity": 0.75 });
+  }
+  if (state.layers.control) {
+    d.control.forEach(c => el("circle", {
+      cx: c[0], cy: c[1], r: 1.7, fill: "var(--src)", "fill-opacity": 0.6,
+    }, svg));
+  }
+
+  /* the selected pair */
+  el("polyline", {
+    points: poly(p.path_a), fill: "none", stroke: "var(--src)", "stroke-width": 9,
+    "stroke-opacity": 0.32, "stroke-linecap": "round", "stroke-linejoin": "round",
+    "vector-effect": "non-scaling-stroke",
+  }, svg);
+  el("polyline", {
+    points: poly(p.path_a), fill: "none", stroke: "var(--src)", "stroke-width": 2,
+    "stroke-linecap": "round", "stroke-linejoin": "round",
+    "vector-effect": "non-scaling-stroke",
+  }, svg);
+  if (p.path_b.length) {
+    el("polyline", {
+      points: poly(p.path_b), fill: "none", stroke: "var(--tgt)", "stroke-width": 2.6,
+      "stroke-linecap": "round", "stroke-linejoin": "round",
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+  }
+
+  ["A", "B"].forEach((tag, k) => {
+    const i = k === 0 ? p.a1 : p.a2;
+    const c = d.control[i], landed = d.landed[i];
+    const bad = landed === null || !p.path_b.length;
+
+    el("circle", {
+      cx: c[0], cy: c[1], r: DATA.max_snap, fill: "none",
+      stroke: landed === null ? "var(--severed)" : "var(--ink-3)",
+      "stroke-width": 1, "stroke-dasharray": "4 4",
+      "stroke-opacity": landed === null ? 0.95 : 0.45,
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    el("circle", {
+      cx: c[0], cy: c[1], r: 5, fill: "var(--surface)",
+      stroke: bad ? "var(--severed)" : "var(--src)", "stroke-width": 2.4,
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    if (landed) {
+      el("line", {
+        x1: c[0], y1: c[1], x2: landed[0], y2: landed[1], stroke: "var(--ink-2)",
+        "stroke-width": 1.4, "stroke-dasharray": "2 2",
+        "vector-effect": "non-scaling-stroke",
+      }, svg);
+      el("circle", {
+        cx: landed[0], cy: landed[1], r: 2.6,
+        fill: bad ? "var(--severed)" : "var(--tgt)",
+      }, svg);
+    }
+    const label = el("text", {
+      x: c[0] + 9, y: c[1] - 8, "font-family": "var(--mono)", "font-size": 12,
+      "font-weight": 600, fill: bad ? "var(--severed)" : "var(--ink)",
+      stroke: "var(--surface)", "stroke-width": 3, "paint-order": "stroke",
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    label.textContent = tag;
+  });
+
+  if (fail) {
+    const c1 = d.control[p.a1], c2 = d.control[p.a2];
+    const mx = Math.min(Math.max((c1[0] + c2[0]) / 2, 46), t.width - 46);
+    const my = Math.min(Math.max((c1[1] + c2[1]) / 2, 30), t.height - 30);
+    el("path", {
+      d: `M${mx - 7},${my - 7} L${mx + 7},${my + 7} M${mx + 7},${my - 7} L${mx - 7},${my + 7}`,
+      stroke: "var(--severed)", "stroke-width": 3, "stroke-linecap": "round",
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    const line1 = el("text", {
+      x: mx, y: my + 24, "text-anchor": "middle", "font-family": "var(--mono)",
+      "font-size": 12, "font-weight": 600, fill: "var(--severed)",
+      stroke: "var(--surface)", "stroke-width": 3.5, "paint-order": "stroke",
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    line1.textContent = fail === "route" ? "no route exists" : "nothing to snap to";
+    const line2 = el("text", {
+      x: mx, y: my + 38, "text-anchor": "middle", "font-family": "var(--mono)",
+      "font-size": 10, fill: "var(--severed)", stroke: "var(--surface)",
+      "stroke-width": 3.5, "paint-order": "stroke",
+      "vector-effect": "non-scaling-stroke",
+    }, svg);
+    line2.textContent = fail === "route"
+      ? `in the ${roles().tgt}`
+      : `within ${DATA.max_snap} m in the ${roles().tgt}`;
+  }
+
+  const snaps = [p.a1, p.a2]
+    .map(i => d.landed[i] && Math.hypot(d.landed[i][0] - d.control[i][0],
+                                        d.landed[i][1] - d.control[i][1]))
+    .filter(v => v !== null && v !== undefined);
+  const snapText = snaps.length
+    ? `Snapped ${snaps.map(v => v.toFixed(1)).join(" m and ")} m onto the ${r.tgt}.`
+    : "";
+  document.getElementById("canvas-note").textContent =
+    `Dashed circles are the ${DATA.max_snap} m snapping limit around A and B. ` +
+    `Thick band: the route through the ${r.src}. Thin line: the same trip through ` +
+    `the ${r.tgt}. ` + snapText;
+}
+
+/* ---------------- arithmetic ---------------- */
+
+function renderScore() {
+  const d = dirData(), p = d.pairs[state.pair], r = roles();
+  const fail = failure(d, p);
+
+  document.getElementById("verdict").innerHTML = fail
+    ? `<span class="verdict">${fail === "route" ? "unreachable" : "unsnappable"} &middot; score 0</span>`
+    : "";
+
+  document.getElementById("lengths").innerHTML = `
+    <div class="length">
+      <span class="length-sym">l<sub>a</sub></span>
+      <span class="length-val">${p.length_a.toFixed(1)} m</span>
+      <span class="length-via">through the ${r.src}</span>
+    </div>
+    <div class="length">
+      <span class="length-sym">l<sub>b</sub></span>
+      <span class="length-val"${fail ? ' style="color:var(--severed)"' : ""}>${
+        p.length_b === null ? "&mdash;" : p.length_b.toFixed(1) + " m"}</span>
+      <span class="length-via">${fail === "snap"
+        ? `no edge within ${DATA.max_snap} m of one endpoint in the ${r.tgt}`
+        : fail === "route"
+          ? `the ${r.tgt} has no path between the snapped points`
+          : `through the ${r.tgt}`}</span>
+    </div>`;
+
+  const la = p.length_a, lb = p.length_b;
+  let lines;
+  if (fail) {
+    const why = fail === "route"
+      ? "the landed points do not connect"
+      : "an endpoint had nothing to snap to";
+    lines = [
+      ["cmt", `no l<sub>b</sub>: ${why},`],
+      ["cmt", `so there is nothing to subtract`],
+      ["", ""],
+      ["final zero", `score = 0.000`],
+    ];
+  } else {
+    const diff = Math.abs(la - lb);
+    const ratio = diff / la;
+    const clamped = Math.min(1, ratio);
+    lines = [
+      ["", `score = 1 \u2212 min(1, |${la.toFixed(1)} \u2212 ${lb.toFixed(1)}| / ${la.toFixed(1)})`],
+      ["", `      = 1 \u2212 min(1, ${diff.toFixed(1)} / ${la.toFixed(1)})`],
+      ["", `      = 1 \u2212 ${clamped === 1 ? "1.000" : ratio.toFixed(3)}`],
+      [p.score === 0 ? "final zero" : "final", `      = ${fmt(p.score)}`],
+    ];
+    if (ratio > 1) {
+      lines.push(["cmt", ``]);
+      lines.push(["cmt", `clamped: off by ${(ratio * 100).toFixed(0)}% of l<sub>a</sub>`]);
+    }
+  }
+  document.getElementById("math").innerHTML = lines
+    .map(([cls, text]) => `<span class="${cls}">${text}</span>`)
+    .join("\n");
+
+  renderTent(fail ? null : lb / la, p.score);
+}
+
+/* Score against the length ratio: a tent peaking where the two lengths agree,
+   with the selected pair marked on it. */
+function renderTent(ratio, score) {
+  const host = document.getElementById("tent");
+  host.textContent = "";
+  const W = 330, H = 132, m = { t: 14, r: 12, b: 26, l: 30 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const svg = el("svg", {
+    viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Pair score against the ratio of target length to source length: " +
+      "it peaks at 1.0 where the lengths agree, reaches zero at twice the source length, " +
+      "and is clamped to zero beyond",
+  }, host);
+
+  const XMAX = 2.3;
+  const x = v => m.l + (v / XMAX) * iw;
+  const y = v => m.t + (1 - v) * ih;
+
+  [0, 0.5, 1].forEach(t => {
+    el("line", { x1: m.l, x2: m.l + iw, y1: y(t), y2: y(t), stroke: "var(--rule)" }, svg);
+    const lab = el("text", {
+      x: m.l - 6, y: y(t) + 3.5, "text-anchor": "end", fill: "var(--ink-3)",
+      "font-size": 9.5, "font-family": "var(--mono)",
+    }, svg);
+    lab.textContent = t.toFixed(1);
+  });
+  [[0, "0"], [0.5, "\u00BD"], [1, "1"], [2, "2"]].forEach(([v, t]) => {
+    const lab = el("text", {
+      x: x(v), y: H - 13, "text-anchor": "middle", fill: "var(--ink-3)",
+      "font-size": 9.5, "font-family": "var(--mono)",
+    }, svg);
+    lab.textContent = t;
+  });
+  const axis = el("text", {
+    x: m.l + iw / 2, y: H - 2, "text-anchor": "middle", fill: "var(--ink-3)",
+    "font-size": 9.5, "font-family": "var(--mono)",
+  }, svg);
+  axis.textContent = "target length \u00F7 source length";
+
+  el("polyline", {
+    points: `${x(0)},${y(0)} ${x(1)},${y(1)} ${x(2)},${y(0)} ${x(XMAX)},${y(0)}`,
+    fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.8,
+    "stroke-linejoin": "round",
+  }, svg);
+
+  if (ratio === null) {
+    const t1 = el("text", {
+      x: m.l + iw / 2, y: y(0.62), "text-anchor": "middle", fill: "var(--severed)",
+      "font-size": 11, "font-family": "var(--mono)", "font-weight": 600,
+    }, svg);
+    t1.textContent = "no target route to place";
+  } else {
+    const cx = x(Math.min(ratio, XMAX)), cy = y(score);
+    el("line", { x1: cx, y1: cy, x2: cx, y2: y(0), stroke: "var(--ink-3)",
+      "stroke-dasharray": "2 2" }, svg);
+    el("circle", { cx, cy, r: 4.5, fill: score === 0 ? "var(--severed)" : "var(--tgt)",
+      stroke: "var(--surface)", "stroke-width": 1.6 }, svg);
+  }
+}
+
+/* ---------------- pair list ---------------- */
+
+function renderPairs() {
+  const d = dirData(), host = document.getElementById("pairs");
+  host.textContent = "";
+  document.getElementById("pairs-title").textContent =
+    `${d.pairs.length} pairs drawn from ${d.n_control} control points`;
+
+  d.pairs.forEach((p, i) => {
+    const fail = failure(d, p);
+    const btn = document.createElement("button");
+    btn.className = "pair" + (p.score === 0 ? " zero" : "");
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(i === state.pair));
+    const meta = fail === "snap" ? "no snap"
+      : fail === "route" ? "no route"
+      : `${p.length_a.toFixed(0)} \u2192 ${p.length_b.toFixed(0)} m`;
+    btn.innerHTML =
+      `<span class="pair-score">${fmt(p.score, 2)}</span>` +
+      `<span class="pair-meta">${meta}</span>` +
+      `<span class="pair-bar"><i style="width:${Math.max(p.score * 100, 2)}%"></i></span>`;
+    btn.addEventListener("click", () => { state.pair = i; renderSelection(); });
+    host.appendChild(btn);
+  });
+}
+
+/* ---------------- shell ---------------- */
+
+function renderHeader() {
+  const t = tile();
+  document.getElementById("instrument").setAttribute("data-dir", state.dir);
+  document.getElementById("dir-val-gt").textContent = fmt(t.gt_to_prop);
+  document.getElementById("dir-val-prop").textContent = fmt(t.prop_to_gt);
+  document.querySelectorAll(".dirbtn").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.dir === state.dir)));
+  document.querySelectorAll(".tile").forEach((b, i) =>
+    b.setAttribute("aria-pressed", String(i === state.tile)));
+
+  const g = t.gt_to_prop, q = t.prop_to_gt;
+  document.getElementById("harmonic").innerHTML =
+    `${t.id} &nbsp; apls = 2 &middot; ${fmt(g)} &middot; ${fmt(q)} / (${fmt(g)} + ${fmt(q)}) = <b>${fmt(t.apls)}</b>`;
+
+  const r = roles();
+  document.getElementById("role-src").textContent = r.src;
+  document.getElementById("role-tgt").textContent = r.tgt;
+  document.getElementById("role-src-note").innerHTML =
+    `a control point every ${DATA.spacing}&nbsp;m along every edge, ` +
+    `and <span class="v">l<sub>a</sub></span> measured here`;
+  document.getElementById("role-tgt-note").innerHTML =
+    `each control point snaps onto this graph within ${DATA.max_snap}&nbsp;m, ` +
+    `and <span class="v">l<sub>b</sub></span> measured here`;
+}
+
+function renderSelection() {
+  document.querySelectorAll(".pair").forEach((b, i) =>
+    b.setAttribute("aria-pressed", String(i === state.pair)));
+  renderCanvas();
+  renderScore();
+}
+
+function renderAll() {
+  renderHeader();
+  renderPairs();
+  renderSelection();
+}
+
+document.getElementById("dirs").addEventListener("click", ev => {
+  const btn = ev.target.closest(".dirbtn");
+  if (!btn) return;
+  state.dir = btn.dataset.dir;
+  state.pair = defaultPair(dirData());
+  renderAll();
+});
+
+document.getElementById("layers").addEventListener("click", ev => {
+  const btn = ev.target.closest(".toggle");
+  if (!btn) return;
+  const layer = btn.dataset.layer;
+  state.layers[layer] = !state.layers[layer];
+  btn.setAttribute("aria-pressed", String(state.layers[layer]));
+  renderCanvas();
+});
+
+document.getElementById("spec-spacing").textContent = DATA.spacing;
+document.getElementById("spec-snap").textContent = DATA.max_snap;
+document.getElementById("spec-snap-2").textContent = DATA.max_snap;
+document.getElementById("spec-threshold").textContent = DATA.threshold;
+
+buildTiles();
+state.pair = defaultPair(dirData());
+renderAll();
+</script>

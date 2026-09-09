@@ -1,21 +1,28 @@
+from dataclasses import replace
+
 import networkx as nx
 import numpy as np
 import pytest
 import torch
 
 from geo_graphs import data, geograph, tiles, train
-from geo_graphs.model import UNet
+from geo_graphs.model import FUSION_REGISTRY, UNet
 
 # Small enough to train in a test, large enough to survive three downsamples.
 TINY = dict(crop_size=32, widths=(8, 16), device="cpu", lr=1e-2, dice_weight=0.5)
 
 
-def synthetic_sample(size: int = 128) -> data.TileSample:
+def synthetic_sample(size: int = 128, lidar: bool = False) -> data.TileSample:
     """A tile with a road cross, built without touching the network.
 
     The truth graph is noded at the centre — four edges meeting at one degree-4
     junction — so it matches what the mask actually depicts rather than two
     lines that merely overlap.
+
+    Args:
+        size: Tile side in pixels.
+        lidar: Attach a synthetic aux stack, so the fusion path can be
+            exercised offline.
     """
     mask = np.zeros((size, size), bool)
     mask[size // 2 - 3 : size // 2 + 3, :] = True
@@ -33,8 +40,19 @@ def synthetic_sample(size: int = 128) -> data.TileSample:
     )
 
     tile = tiles.tile_from_center(36.1699, -115.1398, size_m=float(size))
-    image = data.synthesize_image(mask, np.random.default_rng(0))
-    return data.TileSample(tile=tile, image=image, mask=mask, truth=truth)
+    rng = np.random.default_rng(0)
+    canopy = data.canopy_patches(mask.shape, rng, fraction=0.15)
+    image = data.synthesize_image(mask, rng, occlusion=canopy)
+    sample = data.TileSample(tile=tile, image=image, mask=mask, truth=truth)
+    if not lidar:
+        return sample
+
+    ndsm, intensity = data.synthesize_height(mask, truth, rng, canopy=canopy)
+    return replace(
+        sample,
+        aux=np.stack([ndsm, intensity], axis=-1),
+        aux_valid=np.ones(mask.shape, bool),
+    )
 
 
 class _FixedSource:
@@ -90,11 +108,11 @@ def test_augmentation_off_reproduces_the_raw_crop():
     """The default path must hand back exactly the tensors it did before."""
     dataset = tiny_dataset(4)
     sample_index, spec = dataset.specs[0]
-    image, mask = data.take_crop(dataset.samples[sample_index], spec)
+    crop = data.take_crop(dataset.samples[sample_index], spec)
 
     got_image, got_mask = dataset[0]
-    assert np.array_equal(got_image.numpy(), image.transpose(2, 0, 1))
-    assert np.array_equal(got_mask.numpy()[0].astype(bool), mask)
+    assert np.array_equal(got_image.numpy(), crop.image.transpose(2, 0, 1))
+    assert np.array_equal(got_mask.numpy()[0].astype(bool), crop.mask)
 
 
 def test_augmentation_off_repeats_itself_across_epochs():
@@ -181,6 +199,173 @@ def test_build_dataset_leaves_augmentation_off_when_the_config_does():
     assert not val_set.augment
 
 
+def lidar_dataset(
+    n_crops: int = 8,
+    size: int = 32,
+    coverage: str = "full",
+    augment: bool = False,
+    seed: int = 0,
+) -> train.CropDataset:
+    sample = synthetic_sample(lidar=True)
+    specs = data.crop_specs(sample.mask, size, n_crops, np.random.default_rng(0))
+    return train.CropDataset(
+        [sample],
+        [(0, spec) for spec in specs],
+        augment=augment,
+        rng=np.random.default_rng(seed),
+        coverage=data.CoverageSampler(mode=coverage),  # pyright: ignore[reportArgumentType]
+        coverage_seed=seed,
+    )
+
+
+def test_a_dataset_without_lidar_reports_no_aux_channels():
+    assert tiny_dataset().aux_channels == 0
+    assert len(tiny_dataset()[0]) == 2
+
+
+def test_a_lidar_dataset_yields_the_stack_plus_its_indicator():
+    dataset = lidar_dataset()
+    assert dataset.aux_channels == len(data.AUX_CHANNEL_NAMES) + 1
+
+    image, mask, aux = dataset[0]
+    assert image.shape == (3, 32, 32)
+    assert mask.shape == (1, 32, 32)
+    assert aux.shape == (dataset.aux_channels, 32, 32)
+    assert aux.dtype is torch.float32
+
+
+def test_full_coverage_marks_every_pixel_observed():
+    _, _, aux = lidar_dataset(coverage="full")[0]
+    assert (aux[-1] == 1.0).all()
+
+
+def test_no_coverage_marks_every_pixel_unobserved_and_fills_the_data():
+    """The zero-coverage endpoint, and the imagery-only deployment case."""
+    _, _, aux = lidar_dataset(coverage="none")[0]
+    assert (aux[-1] == 0.0).all()
+    assert (aux[:-1] == data.AUX_FILL).all()
+
+
+def test_coverage_is_fixed_per_crop_across_epochs():
+    """A resampled validation coverage compares two datasets, not two epochs."""
+    dataset = lidar_dataset(coverage="strips")
+    first = [dataset[i][2].clone() for i in range(len(dataset))]
+    assert all(torch.equal(first[i], dataset[i][2]) for i in range(len(dataset)))
+
+
+def test_augmentation_moves_the_aux_stack_with_the_image():
+    """Lidar rotated away from its imagery is worse than no lidar at all."""
+    plain, augmented = lidar_dataset(8), lidar_dataset(8, augment=True)
+
+    for i in range(len(plain)):
+        image, _, aux = (t.numpy() for t in plain[i])
+        got_image, _, got_aux = (t.numpy() for t in augmented[i])
+
+        matches = [
+            k
+            for k in range(data.DIHEDRAL_ORDER)
+            if np.array_equal(dihedral_chw(image, k), got_image)
+        ]
+        assert matches, "augmented image is not a dihedral transform of the crop"
+        assert any(np.array_equal(dihedral_chw(aux, k), got_aux) for k in matches)
+
+
+def test_train_builds_a_fused_network_when_the_source_supplies_lidar():
+    config = train.TrainConfig(**TINY, epochs=1, batch_size=4, seed=0)
+    result = train.train(config, datasets=(lidar_dataset(8), lidar_dataset(4)))
+
+    assert result.model.aux_channels == len(data.AUX_CHANNEL_NAMES) + 1
+    assert isinstance(result.model.fusion, type(FUSION_REGISTRY["early"]()))
+
+
+@pytest.mark.parametrize("coverage", ["full", "none"])
+def test_a_run_launches_at_either_endpoint(coverage):
+    """Tier one's whole exit condition: both endpoints run end to end."""
+    config = train.TrainConfig(
+        **TINY,
+        epochs=2,
+        batch_size=4,
+        seed=0,
+        coverage=data.CoverageSampler(mode=coverage),
+    )
+    result = train.train(
+        config,
+        datasets=(
+            lidar_dataset(8, coverage=coverage),
+            lidar_dataset(4, coverage=coverage),
+        ),
+    )
+
+    assert len(result.history) == 2
+    assert all(np.isfinite(m.train_loss) for m in result.history)
+
+
+def test_train_refuses_splits_that_disagree_about_lidar():
+    config = train.TrainConfig(**TINY, epochs=1, batch_size=4, seed=0)
+    with pytest.raises(ValueError, match="aux channels"):
+        train.train(config, datasets=(lidar_dataset(4), tiny_dataset(4)))
+
+
+def test_a_fused_checkpoint_round_trips(tmp_path):
+    """The fusion key and stack width have to survive, or the weights will not."""
+    config = train.TrainConfig(**TINY, epochs=1, batch_size=4, seed=0)
+    path = tmp_path / "fused.pt"
+    result = train.train(
+        config, checkpoint=path, datasets=(lidar_dataset(4), lidar_dataset(4))
+    )
+
+    restored = train.load_checkpoint(path)
+    assert restored.aux_channels == result.model.aux_channels
+
+    image = torch.randn(1, 3, 32, 32)
+    aux = torch.randn(1, restored.aux_channels, 32, 32)
+    with torch.no_grad():
+        assert torch.allclose(result.model.eval()(image, aux), restored(image, aux))
+
+
+def test_predict_tile_logits_feeds_the_aux_stack_through():
+    sample = synthetic_sample(size=128, lidar=True)
+    model = UNet(
+        in_channels=3,
+        widths=(8, 16),
+        aux_channels=len(data.AUX_CHANNEL_NAMES) + 1,
+        fusion=FUSION_REGISTRY["early"](),
+    )
+
+    logits = train.predict_tile_logits(model, sample)
+
+    assert logits.shape == sample.mask.shape
+    assert np.isfinite(logits).all()
+
+
+def test_scoring_coverage_changes_what_a_fused_model_sees():
+    """Held-out coverage is a condition of the measurement, so it must bite."""
+    sample = synthetic_sample(size=128, lidar=True)
+    model = UNet(
+        in_channels=3,
+        widths=(8, 16),
+        aux_channels=len(data.AUX_CHANNEL_NAMES) + 1,
+        fusion=FUSION_REGISTRY["early"](),
+    ).eval()
+
+    full = train.predict_tile_logits(model, sample, coverage=data.FULL_COVERAGE)
+    none = train.predict_tile_logits(
+        model, sample, coverage=data.CoverageSampler(mode="none")
+    )
+    assert not np.allclose(full, none)
+
+
+def test_predict_tile_logits_refuses_a_sample_with_no_lidar():
+    model = UNet(
+        in_channels=3,
+        widths=(8, 16),
+        aux_channels=len(data.AUX_CHANNEL_NAMES) + 1,
+        fusion=FUSION_REGISTRY["early"](),
+    )
+    with pytest.raises(ValueError, match="carries none"):
+        train.predict_tile_logits(model, synthetic_sample(size=128))
+
+
 def test_resolve_device_honours_an_explicit_request():
     assert train.resolve_device("cpu") == torch.device("cpu")
 
@@ -252,9 +437,7 @@ def test_checkpoint_survives_a_run_that_never_finishes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(train, "_run_epoch", die_partway)
     with pytest.raises(KeyboardInterrupt):
-        train.train(
-            config, checkpoint=path, datasets=(tiny_dataset(4), tiny_dataset(4))
-        )
+        train.train(config, checkpoint=path, datasets=(tiny_dataset(4), tiny_dataset(4)))
 
     assert path.exists(), "no checkpoint survived the interrupted run"
     assert train.load_checkpoint(path) is not None
