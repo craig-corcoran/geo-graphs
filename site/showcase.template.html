@@ -391,9 +391,9 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
       <p class="eyebrow">SpaceNet 3 &middot; Las Vegas &middot; 1 m / pixel</p>
       <h1>Roads from pixels, and the metric that tells you when you failed</h1>
       <p class="lede prose">A segmentation model turns satellite imagery into a road
-      mask. Skeletonization turns the mask into a graph. The interesting part is
-      that a mask which still looks almost perfect can produce a graph that is
-      badly, unrecoverably wrong &mdash; and pixel accuracy will not tell you.</p>
+      mask. Skeletonization turns the mask into a graph. A mask still scoring 0.94
+      pixel IoU can yield a graph whose routes score 0.43, and pixel accuracy will
+      not tell you which one you have.</p>
     </div>
     <div class="headline-stat">
       <span class="stat-value" id="hero-apls">&mdash;</span>
@@ -412,11 +412,11 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
       <p><em class="term">IoU</em> compares pixels: what fraction of the road
       surface did you find. <em class="term">APLS</em> compares <em class="term">routes</em>:
       it samples points across the network and asks whether the travel distance
-      between them survived. One is what a segmentation loss optimizes. The other
-      is what a road network is <em class="term">for</em>.</p>
+      between them survived. A segmentation loss optimizes the first. A road network
+      is built to deliver the second.</p>
       <p>Drag the slider. It punches small gaps into a <strong>perfect</strong>
-      mask &mdash; the scale of a tree shadow, an overpass, a truck in a lane &mdash;
-      then rebuilds the graph and rescores it.</p>
+      mask (the scale of a tree shadow, an overpass, a truck in a lane), then
+      rebuilds the graph and rescores it.</p>
     </div>
 
     <div class="panel">
@@ -425,7 +425,7 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
           <div class="panel-title">Score against damage</div>
           <div class="legend">
             <span class="legend-item"><span class="swatch" style="background:var(--truth)"></span>Pixel IoU</span>
-            <span class="legend-item"><span class="swatch" style="background:var(--model)"></span>APLS &mdash; topology</span>
+            <span class="legend-item"><span class="swatch" style="background:var(--model)"></span>APLS &middot; topology</span>
           </div>
           <div id="divergence-chart"></div>
         </div>
@@ -464,13 +464,24 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
       <h2>What was built</h2>
       <p>A U-Net predicts a road mask from three-band pan-sharpened imagery.
       Morphological thinning traces the mask into a graph: pixels with two
-      neighbours are interior, three or more are a junction. Douglas&ndash;Peucker
+      neighbors are interior, three or more are a junction. Douglas&ndash;Peucker
       simplification, spur pruning and junction snapping clean it up. APLS scores
       the result against OpenStreetMap-style ground truth.</p>
-      <p>Every chip is scored against <strong>its own ceiling</strong> &mdash; the
-      APLS the same pipeline reaches from a <em class="term">perfect</em> mask on
-      that chip. That number is not constant. It runs near 0.98 on a flat downtown
-      grid and drops sharply where roads cross without meeting.</p>
+      <p>Every chip is scored against <strong>its own ceiling</strong>: the APLS the
+      same pipeline reaches from a <em class="term">perfect</em> mask on that chip.
+      That number varies by chip. Across the ten chips below it runs 0.901 to 0.994,
+      lowest where roads cross without meeting.</p>
+      <p>The mask threshold is a real hyperparameter, and reporting a model at a
+      threshold picked on the chips it is then scored on would inflate the number. The
+      validation split has <span id="thr-total">&mdash;</span> chips. The first
+      <span id="thr-tuning">&mdash;</span> were used to sweep the threshold against APLS
+      on the frozen checkpoint, which picks <strong id="thr-value">&mdash;</strong>.
+      Every figure on this page comes from the other
+      <span id="thr-disjoint">&mdash;</span>, which took no part in that
+      choice.<span id="thr-excluded"></span> At <span id="thr-baseline">&mdash;</span>,
+      the default the threshold was never tuned away from, those same
+      <strong id="thr-scored">&mdash;</strong> chips score
+      <span id="thr-default">&mdash;</span>.</p>
     </div>
 
     <div class="cols">
@@ -483,20 +494,22 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
       <div>
         <h3>Per-chip spread</h3>
         <div id="distribution-chart"></div>
-        <p class="note" style="margin-top:0.5rem">Every scored chip, sorted. The mean
-        hides a long tail: chips differ more than models do.</p>
+        <p class="note" style="margin-top:0.5rem" id="distribution-note">&mdash;</p>
       </div>
     </div>
 
     <div class="caveat prose">
-      <strong>On comparability.</strong> Published SpaceNet APLS figures run roughly
-      0.63&ndash;0.74. This sits inside that range, and the metric agrees with the
-      reference implementation to 3&times;10<sup>&minus;5</sup>. But it is
-      <strong>one AOI</strong> &mdash; Las Vegas, the easiest, a regular grid in high
-      desert contrast &mdash; scored on a private 20% holdout rather than the official
-      test split, where published numbers span four cities including Shanghai and
-      Khartoum. In range on the easiest city is the honest claim; matching published
-      results is not.
+      <strong>On comparability.</strong> The SpaceNet&nbsp;3 challenge scored its top
+      five entries at 0.628&ndash;0.666 APLS across four cities, and at
+      <strong>0.771&ndash;0.801 on Las Vegas alone</strong> (Van Etten et&nbsp;al. 2018,
+      Table&nbsp;4). This run scores <span id="caveat-apls">&mdash;</span> on Las Vegas,
+      <span id="caveat-gap">&mdash;</span>, which is a reasonable place for a baseline
+      that has had one hyperparameter tuned and nothing else. It is not a leaderboard
+      placing: the split is a private 20% holdout rather than the official test split.
+      The four-city totals are the wrong yardstick either way, since Vegas is the easiest
+      of the four, a regular grid in high desert contrast, and those totals are held down
+      by Paris, Shanghai and Khartoum. The metric itself agrees with the vendored
+      SpaceNet reference to 3&times;10<sup>&minus;5</sup> in the worst case observed.
     </div>
   </div>
 </section>
@@ -506,9 +519,9 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
     <p class="eyebrow">The evidence</p>
     <div class="prose">
       <h2>Ten held-out chips, worst to best</h2>
-      <p>A deliberate spread rather than a highlight reel. Each is about
-      324&nbsp;&times;&nbsp;396&nbsp;m of ground &mdash; roughly four city blocks.
-      Toggle the overlays to compare what the model drew against the truth.</p>
+      <p>These ten span the score range, worst first. Each covers about
+      324&nbsp;&times;&nbsp;396&nbsp;m of ground, roughly four city blocks. Toggle the
+      overlays to compare what the model drew against the truth.</p>
     </div>
 
     <div class="filmstrip" id="filmstrip" role="tablist" aria-label="Held-out chips"></div>
@@ -528,8 +541,8 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
     <div class="prose">
       <h2>Four bugs the invariants caught</h2>
       <p>Each was silent: the pipeline ran, produced plausible geometry, and
-      reported a believable number. Each was found by asserting a property that
-      had to hold &mdash; not by looking at output.</p>
+      reported a believable number. Each was found by asserting a property that had
+      to hold. Reading the output would have caught none of them.</p>
     </div>
     <div class="findings">
       <div class="finding">
@@ -550,8 +563,8 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
           <h3>Parallel edges silently discarded</h3>
           <p>Tracing visits every edge from both ends, so the second visit must be
           recognized and dropped. Keying that on endpoints plus path <em class="term">length</em>
-          collides whenever two genuinely distinct routes share both &mdash; two arcs
-          of a loop &mdash; and threw one away along with its geometry. It needed
+          collides whenever two genuinely distinct routes share both (the two arcs of
+          a loop), and threw one away along with its geometry. It needed
           single-pixel junctions to trigger, which is why thick-road masks never
           showed it.</p>
         </div>
@@ -573,9 +586,9 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
         <div>
           <h3>Square in degrees, not on the ground</h3>
           <p>The imagery ships in a geographic CRS. A Vegas pixel is 0.243&nbsp;m
-          east&ndash;west and 0.300&nbsp;m north&ndash;south &mdash; square in degrees
-          and 19% out of square in reality &mdash; while the whole pipeline measures
-          distance in pixels and calls it metres. Reprojection to UTM is now
+          east&ndash;west and 0.300&nbsp;m north&ndash;south: square in degrees, 19% out
+          of square on the ground. The whole pipeline measured distance in pixels and
+          called it metres. Reprojection to UTM is now
           mandatory, and a geographic CRS is refused outright.</p>
         </div>
       </div>
@@ -589,21 +602,22 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
     <div class="prose">
       <h2>Why a perfect mask still fails</h2>
       <p>Render the ground truth to a flawless mask, trace it back, and score it.
-      It does not return 1.0. That is not a tuning failure &mdash; it is a property
-      of the representation.</p>
+      It does not return 1.0. The shortfall is a property of the representation, and
+      no amount of tuning removes it.</p>
       <p>A 2D binary mask <strong>cannot express a road passing over another</strong>.
       Where a bridge crosses a street, the labels correctly record no junction: you
       cannot turn from one to the other. Flattened to a plane, the two roads touch,
       and skeletonization has no choice but to emit a junction that does not exist.</p>
       <p>Sweeping road width from 1.5 to 18&nbsp;m and resolution from 0.5 to
-      2&nbsp;m/px moves the ceiling only between 0.861 and 0.901. Thinner roads and
-      a finer grid do not close it, because the problem is not resolution. The loss
-      lands entirely in the direction that punishes <em class="term">invented</em>
-      connections, which is the signature an overpass leaves.</p>
-      <p>This is the measured argument for a different representation &mdash; per-cell
-      directional edge slots, which can encode two roads meeting at one pixel
-      <em class="term">without</em> a junction. A mask simply has nowhere to put
-      that fact.</p>
+      2&nbsp;m/px moves the ceiling only between 0.861 and 0.901: a twelve-fold change
+      in width and a four-fold change in resolution buy 0.04. The loss concentrates in
+      the direction that punishes <em class="term">invented</em> connections, which
+      holds 0.79&ndash;0.86 across that sweep while the opposite direction stays at
+      0.94&ndash;0.96. That asymmetry is the signature an overpass leaves.</p>
+      <p>This is the measured argument for a different representation: per-cell
+      directional edge slots, which can encode two roads crossing at one pixel
+      <em class="term">without</em> a junction. A mask has nowhere to put that
+      fact.</p>
     </div>
   </div>
 </section>
@@ -612,8 +626,8 @@ footer { padding: 2.4rem 0 3.4rem; color: var(--ink-3); font-size: 0.9rem; }
   <div class="wrap prose">
     <p>Built with PyTorch, scikit-image, shapely and rasterio. APLS validated
     against the SpaceNet reference implementation, vendored byte-for-byte as a test
-    oracle. Every figure on this page is precomputed from the run artifact &mdash;
-    no numbers were typed by hand.</p>
+    oracle. Every figure on this page is precomputed from the run artifact; no numbers
+    were typed by hand.</p>
   </div>
 </footer>
 
@@ -637,18 +651,54 @@ document.getElementById("hero-apls").textContent = fmt(S.apls_mean);
 document.getElementById("hero-n").textContent = S.n_scored;
 document.getElementById("hero-ceiling").textContent = fmt(S.ceiling);
 document.getElementById("hero-sub").textContent =
-  `${S.n_train_chips} training chips \u00B7 ${S.crop_size}px crops · best of ${S.epochs_run} epochs`;
+  `${S.n_train_chips} training chips \u00B7 ${S.crop_size}px crops \u00B7 ` +
+  `best of ${S.epochs_run} epochs \u00B7 mask threshold ${S.threshold}`;
+
+/* SpaceNet 3 leaderboard, Las Vegas column, top five entries.
+   Van Etten et al., "SpaceNet: A Remote Sensing Dataset and Challenge Series",
+   arXiv:1807.01232, Table 4. */
+const SN3_VEGAS = [0.771, 0.801];
+
+const SN3_LOW = Math.min(...SN3_VEGAS), SN3_HIGH = Math.max(...SN3_VEGAS);
+document.getElementById("caveat-apls").textContent = fmt(S.apls_mean, 4);
+document.getElementById("caveat-gap").textContent =
+  S.apls_mean > SN3_HIGH
+    ? `${fmt(S.apls_mean - SN3_HIGH, 3)} above the top of that column`
+    : S.apls_mean < SN3_LOW
+      ? `${fmt(SN3_LOW - S.apls_mean, 3)} to ${fmt(SN3_HIGH - S.apls_mean, 3)} below it`
+      : "inside that range";
+document.getElementById("thr-value").textContent = S.threshold;
+document.getElementById("thr-baseline").textContent = S.baseline_threshold;
+document.getElementById("thr-default").textContent = fmt(S.apls_at_baseline, 4);
+document.getElementById("thr-total").textContent = S.n_val_chips;
+document.getElementById("thr-tuning").textContent = S.n_tuning_chips;
+document.getElementById("thr-scored").textContent = S.n_scored;
+document.getElementById("thr-disjoint").textContent = S.n_val_chips - S.n_tuning_chips;
+
+/* A chip whose perfect-mask ceiling is 0 measures nothing about the model, so it
+   is dropped. Say so, rather than leaving the arithmetic one short. */
+const excluded = S.n_val_chips - S.n_tuning_chips - S.n_scored;
+document.getElementById("thr-excluded").textContent = excluded
+  ? excluded === 1
+    ? ` One of those is excluded as degenerate, because a perfect mask scores zero on it` +
+      ` and it therefore says nothing about the model, leaving ${S.n_scored}.`
+    : ` ${excluded} of those are excluded as degenerate, because a perfect mask scores` +
+      ` zero on them, leaving ${S.n_scored}.`
+  : "";
 
 /* ---------------- result table ---------------- */
 
 const rows = [
   ["APLS, mean", fmt(S.apls_mean, 4)],
   ["APLS, median", fmt(S.apls_median, 4)],
+  [`APLS at the ${S.baseline_threshold} default`, fmt(S.apls_at_baseline, 4)],
+  ["Mask threshold", String(S.threshold)],
   ["Pipeline ceiling", fmt(S.ceiling, 4)],
   ["Share of ceiling", (S.fraction_of_ceiling * 100).toFixed(1) + "%"],
   ["Pixel IoU", fmt(S.mask_iou, 4)],
   ["Training chips", String(S.n_train_chips)],
-  ["Held-out chips", String(S.n_val_chips)],
+  ["Chips scored here", String(S.n_scored)],
+  ["Chips used to pick the threshold", String(S.n_tuning_chips)],
   ["Best epoch", `${S.best_epoch} of ${S.epochs_run}`],
 ];
 document.getElementById("result-table").innerHTML =
@@ -749,11 +799,12 @@ function renderDivergence() {
 
   const first = levels[0], last = levels[levels.length - 1];
   document.getElementById("divergence-caption").textContent =
-    `At ${last.gaps} gaps the mask still scores ${fmt(last.iou, 3)} IoU — ` +
-    `${((1 - last.iou) * 100).toFixed(0)}% of road pixels lost — while APLS has fallen ` +
-    `from ${fmt(first.apls, 3)} to ${fmt(last.apls, 3)}, and the network has broken ` +
-    `into ${last.components} disconnected pieces. That gap is the entire argument ` +
-    `for scoring topology rather than pixels.`;
+    `At ${last.gaps} gaps the mask has lost ${((1 - last.iou) * 100).toFixed(0)}% of its ` +
+    `road pixels and still scores ${fmt(last.iou, 3)} IoU, while APLS has fallen from ` +
+    `${fmt(first.apls, 3)} to ${fmt(last.apls, 3)} and the network has broken into ` +
+    `${last.components} disconnected pieces. Over that range the pixel metric moves ` +
+    `${fmt(first.iou - last.iou, 3)} and the routing metric moves ` +
+    `${fmt(first.apls - last.apls, 3)}.`;
 }
 slider.addEventListener("input", renderDivergence);
 
@@ -794,6 +845,11 @@ function drawDistribution() {
   const xl = el("text", { x: m.l + iw / 2, y: H - 6, "text-anchor": "middle",
     fill: "var(--ink-3)", "font-size": 10.5, "font-family": "var(--mono)" }, svg);
   xl.textContent = `${vals.length} chips, sorted by APLS`;
+
+  document.getElementById("distribution-note").textContent =
+    `Every scored chip, sorted. The spread runs ${fmt(Math.min(...vals), 3)} to ` +
+    `${fmt(Math.max(...vals), 3)} around a mean of ${fmt(S.apls_mean, 3)}. A single ` +
+    `mean over chips this different is a weak summary.`;
 }
 
 /* ---------------- gallery ---------------- */

@@ -31,8 +31,21 @@ from geo_graphs.model import predict_mask
 #: A range starting at 0.2 misses the optimum entirely, which is what the first
 #: sweep did.
 DEFAULT_THRESHOLDS = (
-    0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.10, 0.12,
-    0.15, 0.20, 0.30, 0.40, 0.50, 0.65, 0.80,
+    0.01,
+    0.02,
+    0.03,
+    0.04,
+    0.05,
+    0.07,
+    0.10,
+    0.12,
+    0.15,
+    0.20,
+    0.30,
+    0.40,
+    0.50,
+    0.65,
+    0.80,
 )
 
 
@@ -151,6 +164,11 @@ def sweep(
         logits = train.predict_tile_logits(model, sample, device=device)
         ceiling = cleanup.clean(skeleton.graph_from_mask(sample.mask))
         ceiling_apls = metrics.apls(sample.truth, ceiling).score
+        if ceiling_apls == 0.0:
+            # A perfect mask scores zero here, so no threshold can be judged on
+            # this chip. Degenerate, not a hard case.
+            logger.warning(f"{sample_id}: zero ceiling, skipping")
+            continue
 
         scores.extend(
             score_at_threshold(logits, sample, ceiling_apls, t, sample_id)
@@ -234,6 +252,16 @@ def main() -> None:
         help="validation tiles to score; the run's own eval used 40",
     )
     parser.add_argument(
+        "--skip-tiles",
+        type=int,
+        default=0,
+        help=(
+            "validation tiles to skip before scoring. Selecting a threshold on "
+            "one slice and reporting it on a disjoint one is what keeps the "
+            "reported number free of the choice made to produce it."
+        ),
+    )
+    parser.add_argument(
         "--thresholds",
         type=float,
         nargs="+",
@@ -244,7 +272,9 @@ def main() -> None:
     args = parser.parse_args()
 
     run = json.loads(args.run_json.read_text())
-    sample_ids = run["config"]["val_ids"][: args.n_tiles]
+    sample_ids = run["config"]["val_ids"][
+        args.skip_tiles : args.skip_tiles + args.n_tiles
+    ]
     thresholds = tuple(sorted(args.thresholds))
 
     source, _ = train.build_source(args.aoi_root, "spacenet", args.resolution)

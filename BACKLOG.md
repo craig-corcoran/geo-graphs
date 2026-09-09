@@ -233,3 +233,22 @@ missing offline suites turned up two real geometry bugs, both since fixed; see
   but `osmnx` → `geopandas` → `pandas` is not separable without giving up the
   geospatial stack. No first-party code imports pandas, and none should. Revisit
   only if a pure-shapely/pyproj path to OSM ingestion becomes worthwhile.
+
+- **Reconcile the eval threshold between `train.py` and the site build.** The
+  run artifact scores at `predict_mask`'s 0.5 default while the showcase now
+  reports at 0.02, so the two disagree by construction. Options: make the
+  training-time eval threshold a `TrainConfig` field, or move `predict_mask`'s
+  default. Moving the default invalidates the existing run artifacts, so it
+  needs a clean-break rebuild rather than a shim. Evidence for 0.02 is the
+  2026-09-09 leave-one-out entry in `EXPERIMENT_LOG.md`.
+
+- **Diagnose `img1612`'s zero ceiling.** A perfect mask traced back scores 0.0
+  against its own truth graph, and the chip has edges so the empty-graph guard
+  misses it. Both scorers now skip zero-ceiling chips, which is a sanity guard
+  rather than an explanation. Suspected cause is every edge falling under
+  `min_path_length` so no control-point pair survives; unverified. See the
+  2026-09-09 disjoint-holdout entry in `EXPERIMENT_LOG.md`.
+- **`make lint` does not cover `scripts/`.** `SRC` in the Makefile is
+  `$(PKG) $(TESTS)`, so script files are never formatted or linted by the repo's
+  own target and have accumulated at least one E501. Widening `SRC` will surface
+  pre-existing violations, so it is a small cleanup rather than a one-line edit.

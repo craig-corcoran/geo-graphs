@@ -840,3 +840,125 @@ defaults to `val_loss` — a pixel measure — and this run is direct evidence t
 pixel measures and APLS disagree about which model is better *on real training
 decisions*, not merely on synthetic damage. Selecting the epoch on a cheap APLS
 proxy is now better motivated than it was when it was filed.
+
+---
+
+## 2026-09-09 (later) — The tuned threshold survives leave-one-out, and it crosses the Vegas leaderboard column
+
+### Change under test
+
+The showcase reported the checkpoint at `predict_mask`'s 0.5 default, which the
+2026-09-08 sweep had already shown to be the wrong operating point. Moving the
+page to the APLS-optimal 0.02 raises the headline from 0.7247 to 0.8071, so the
+question is whether that 0.08 is real or an artifact of choosing the threshold
+on the same 40 chips the number is reported on.
+
+### What was measured
+
+Threshold selection re-run as a cross-validation over the existing sweep
+artifact. No inference: `outputs/threshold_sweep.json` already carries all
+40 x 15 per-tile scores.
+
+| Estimator | Threshold picked | Mean APLS |
+|---|---|---|
+| Untuned default | 0.50 | 0.7247 |
+| Tuned on 40, scored on 40 (in-sample) | 0.02 | 0.8071 |
+| **Leave-one-out: tune on 39, score the 40th** | **0.02 on all 40 folds** | **0.8071** |
+| Split-half, A tunes / B scores | 0.10 | 0.7769 |
+| Split-half, B tunes / A scores | 0.02 | 0.8048 |
+
+**The selection buys itself nothing measurable.** Every LOO fold picks 0.02 and
+the held-out mean matches the in-sample figure to four decimals. One scalar
+chosen over 40 samples is not enough freedom to overfit here. Split-half is
+noisier and one half picks 0.10, which is the expected behavior with 20 chips
+of evidence rather than 39, not a contradiction.
+
+**This corrects the earlier caveat.** The first write-up of this sweep said the
+direction of the finding survived but the magnitude did not. The LOO estimate
+says the magnitude survives too.
+
+### The consequence nobody asked for
+
+At 0.8071 the result crosses the SpaceNet 3 Las Vegas column (0.771-0.801,
+Van Etten et al. 2018, Table 4) rather than sitting below it. That makes the
+comparability caveat more load-bearing, not less: the split is a private 20%
+holdout rather than the official test split, and challenge entrants could not
+tune a threshold against the test set at all. 0.7247 at the untuned default is
+the like-for-like figure, and the page now says so explicitly.
+
+### What it motivates
+
+`predict_mask`'s own default is still 0.5, and `train.py` still evaluates there,
+so the run artifact and the showcase now disagree by construction. Either the
+training-time eval threshold becomes a config field, or the default moves. That
+is a change to the pipeline rather than to a page, so it is filed rather than
+made here.
+
+`scripts/build_site_data.py` gained `--threshold`, defaulting to 0.02, and
+re-scores every held-out chip rather than reading the run artifact's numbers.
+Ceilings still come from the artifact untouched: a perfect mask does not pass
+through `predict_mask`, so no threshold can move them.
+
+---
+
+## 2026-09-09 (later still) — A disjoint holdout removes the leak, and exposes a degenerate chip
+
+Supersedes the leave-one-out entry above as the basis for the reported number.
+LOO was the right check given one scored set; it turned out a second set was
+sitting unused.
+
+### The data that was already there
+
+`vegas_best.json` carries 196 validation chips, and the run's own eval scored
+only the first 40 (`apls_eval_tiles`). The other 156 had never been touched by
+anything. Selecting the threshold on the 40 and reporting on the 156 removes the
+leak outright, with no new data and about four minutes of inference.
+
+`threshold_sweep.py` gained `--skip-tiles` so the two slices can be addressed
+separately; `build_site_data.py` gained `--skip-chips` / `--n-scored` and now
+re-scores chips end to end rather than reading the run artifact's numbers.
+
+### What was measured, on 155 held-out chips
+
+| Threshold | Where it came from | APLS |
+|---|---|---|
+| 0.50 | `predict_mask` default, untuned | 0.7550 |
+| **0.02** | **swept on the disjoint 40** | **0.7976** |
+| 0.03 | the holdout's own optimum | 0.8016 |
+
+**The transfer costs 0.0040.** Importing a threshold chosen on a different 40
+chips gives up four thousandths against tuning on the holdout directly. The
+in-sample figure on the 40 was 0.8071; the 0.01 above the holdout is the two
+chip sets differing in difficulty, not the threshold overfitting.
+
+**The core finding replicates on 3.9x the data.** IoU still peaks at 0.30 and
+APLS at 0.03. `gt→prop` still falls monotonically across the whole sweep, 0.840
+to 0.620, while `prop→gt` stays between 0.788 and 0.886.
+
+### The degenerate chip
+
+`img1612` has a **ceiling of 0.0**: a perfect mask, traced back, scores zero
+against its own truth graph. It has edges, so the existing `number_of_edges()`
+guard did not catch it. Averaged in, it drags the mean down while measuring
+nothing about the model, and its `fraction_of_ceiling` is 0/0. Both scorers now
+skip zero-ceiling chips and say so. Excluding it moves the reported mean from
+0.7925 to 0.7976.
+
+`img1119` is the opposite case and stays in: ceiling 0.9865, model IoU 0.0000,
+APLS 0.0000. The model found no road pixels at all on that chip. That is a real
+failure and belongs in the distribution.
+
+The 40-chip eval never hit either case, which is the argument for scoring the
+whole split rather than a prefix of it.
+
+### What it motivates
+
+The reported figure of 0.7976 now sits inside the SpaceNet 3 Las Vegas column
+(0.771-0.801, Van Etten et al. 2018, Table 4) rather than above it, which is a
+more defensible place for a baseline with one hyperparameter tuned. The
+comparison is still not a leaderboard placing: private holdout, not the official
+test split.
+
+Root cause of the zero ceiling is unexamined. Likely every edge is shorter than
+`min_path_length`, so no control-point pair survives, but that is a guess and
+not a measurement.

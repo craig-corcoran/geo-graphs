@@ -22,7 +22,8 @@ from loguru import logger
 from PIL import Image
 from shapely.geometry import LineString
 
-from geo_graphs import cleanup, geograph, metrics, raster, skeleton, spacenet, train
+from geo_graphs import cleanup, geograph, metrics, skeleton, spacenet, train
+from geo_graphs.model import predict_mask
 
 #: Gap radius in pixels for the divergence demo. Two or three pixels is the
 #: scale of a tree shadow or a vehicle occluding a lane.
@@ -162,7 +163,77 @@ def non_planar_crossings(G: nx.MultiGraph) -> int:
     )
 
 
-def build_gallery(source, model, reports, n_chips: int) -> list[dict]:
+def score_chips(
+    model,
+    source,
+    sample_ids: list[str],
+    threshold: float,
+    baseline: float,
+    device: str = "cpu",
+) -> list[dict]:
+    """Score chips end to end at one mask threshold.
+
+    The reported chips are deliberately disjoint from the ones the threshold was
+    chosen on. ``predict_mask``'s 0.5 default was never tuned; the sweep picks
+    0.02 against APLS on the first 40 validation chips, and the page reports on
+    the remaining 156, which took no part in that choice.
+
+    Ceilings are computed here rather than read from the run artifact, because
+    the artifact only covers the 40 chips its own eval scored. A perfect mask
+    does not pass through ``predict_mask``, so no threshold can move them.
+
+    Args:
+        model: Trained network, from a checkpoint.
+        source: Where imagery and labels come from.
+        sample_ids: Chips to score.
+        threshold: Probability above which a pixel counts as road.
+        baseline: A second threshold scored in the same pass for comparison,
+            normally ``predict_mask``'s untuned default. Logits dominate the
+            cost and are already in hand, so this is close to free.
+        device: Device string for inference.
+
+    Returns:
+        One record per chip, in the shape the run artifact uses. Chips with no
+        ground-truth roads are skipped, so this can be shorter than the input.
+    """
+    scored = []
+    for n, sample_id in enumerate(sample_ids, start=1):
+        sample = source.load(sample_id)
+        if sample.truth.number_of_edges() == 0:
+            logger.debug(f"{sample_id}: no ground-truth roads, skipping")
+            continue
+
+        logits = train.predict_tile_logits(model, sample, device=device)
+        predicted = predict_mask(logits, threshold)
+        cleaned = cleanup.clean(skeleton.graph_from_mask(predicted))
+        result = metrics.apls(sample.truth, cleaned)
+        ceiling_graph = cleanup.clean(skeleton.graph_from_mask(sample.mask))
+        ceiling = metrics.apls(sample.truth, ceiling_graph).score
+        if ceiling == 0.0:
+            # A perfect mask scores zero here, so the chip measures nothing about
+            # the model and fraction_of_ceiling is 0/0. Degenerate, not a failure.
+            logger.warning(f"{sample_id}: zero ceiling, excluded from the aggregate")
+            continue
+
+        at_baseline = cleanup.clean(
+            skeleton.graph_from_mask(predict_mask(logits, baseline))
+        )
+
+        scored.append(
+            {
+                "sample_id": sample_id,
+                "mask_iou": metrics.iou(predicted, sample.mask),
+                "apls_cleaned": result.score,
+                "apls_at_baseline": metrics.apls(sample.truth, at_baseline).score,
+                "ceiling_apls": ceiling,
+                "fraction_of_ceiling": result.score / ceiling if ceiling else 0.0,
+            }
+        )
+        logger.info(f"[{n}/{len(sample_ids)}] {sample_id}: {result.score:.4f}")
+    return scored
+
+
+def build_gallery(source, model, reports, n_chips: int, threshold: float) -> list[dict]:
     """Render a spread of held-out chips, worst through best.
 
     Deliberately a spread rather than the best few: the interesting chips are
@@ -176,7 +247,7 @@ def build_gallery(source, model, reports, n_chips: int) -> list[dict]:
     for report in picks:
         sample = source.load(report["sample_id"])
         logits = train.predict_tile_logits(model, sample)
-        predicted = logits > 0.0
+        predicted = predict_mask(logits, threshold)
         proposal = cleanup.clean(skeleton.graph_from_mask(predicted))
 
         gallery.append(
@@ -198,12 +269,24 @@ def build_gallery(source, model, reports, n_chips: int) -> list[dict]:
     return gallery
 
 
-def build(paths: Paths, n_chips: int, divergence_chip: str | None) -> dict:
+def build(
+    paths: Paths,
+    n_chips: int,
+    divergence_chip: str | None,
+    threshold: float,
+    baseline: float,
+    skip_chips: int,
+    n_scored: int,
+) -> dict:
     """Assemble the whole payload."""
     run = json.loads(paths.run_json.read_text())
     source = spacenet.SpaceNetTileSource(paths.aoi_root)
     model = train.load_checkpoint(paths.checkpoint)
-    reports = run["eval"]["per_tile"]
+
+    val_ids = run["config"]["val_ids"]
+    sample_ids = val_ids[skip_chips : skip_chips + n_scored]
+    logger.info(f"scoring {len(sample_ids)} chips at threshold {threshold}")
+    reports = score_chips(model, source, sample_ids, threshold, baseline)
 
     logger.info("divergence sweep")
     chip = divergence_chip or max(reports, key=lambda r: r["ceiling_apls"])["sample_id"]
@@ -211,19 +294,27 @@ def build(paths: Paths, n_chips: int, divergence_chip: str | None) -> dict:
     divergence["chip"] = chip
 
     logger.info(f"gallery ({n_chips} chips)")
-    gallery = build_gallery(source, model, reports, n_chips)
+    gallery = build_gallery(source, model, reports, n_chips, threshold)
 
     aplss = np.array([r["apls_cleaned"] for r in reports])
     return {
         "summary": {
             "n_train_chips": len(run["config"]["train_ids"]),
             "n_val_chips": len(run["config"]["val_ids"]),
-            "n_scored": run["eval"]["n_scored"],
-            "apls_mean": round(run["eval"]["apls_cleaned"], 4),
-            "apls_median": round(run["eval"]["apls_median"], 4),
-            "ceiling": round(run["eval"]["ceiling_apls"], 4),
-            "fraction_of_ceiling": round(run["eval"]["fraction_of_ceiling"], 4),
-            "mask_iou": round(run["eval"]["mask_iou"], 4),
+            "n_scored": len(reports),
+            "n_tuning_chips": skip_chips,
+            "threshold": threshold,
+            "baseline_threshold": baseline,
+            "apls_at_baseline": round(
+                float(np.mean([r["apls_at_baseline"] for r in reports])), 4
+            ),
+            "apls_mean": round(float(aplss.mean()), 4),
+            "apls_median": round(float(np.median(aplss)), 4),
+            "ceiling": round(float(np.mean([r["ceiling_apls"] for r in reports])), 4),
+            "fraction_of_ceiling": round(
+                float(np.mean([r["fraction_of_ceiling"] for r in reports])), 4
+            ),
+            "mask_iou": round(float(np.mean([r["mask_iou"] for r in reports])), 4),
             "best_epoch": run.get("best_epoch"),
             "epochs_run": len(run["history"]),
             "stopped_early": run.get("stopped_early"),
@@ -258,17 +349,55 @@ def main() -> None:
     parser.add_argument("--html", type=Path, default=Path("outputs/showcase.html"))
     parser.add_argument("--chips", type=int, default=10)
     parser.add_argument("--divergence-chip", default=None)
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.02,
+        help="Mask threshold to report at. Default is the APLS optimum measured "
+        "on the chips skipped by --skip-chips.",
+    )
+    parser.add_argument(
+        "--baseline-threshold",
+        type=float,
+        default=0.5,
+        help="Second threshold scored for comparison; predict_mask's default.",
+    )
+    parser.add_argument(
+        "--skip-chips",
+        type=int,
+        default=40,
+        help="Validation chips to skip. These are the ones the threshold was "
+        "chosen on, so the reported chips took no part in that choice.",
+    )
+    parser.add_argument(
+        "--n-scored",
+        type=int,
+        default=156,
+        help="Validation chips to score after the skip.",
+    )
+    parser.add_argument(
+        "--page-only",
+        action="store_true",
+        help="Rebuild the page from an existing --out JSON, skipping inference.",
+    )
     args = parser.parse_args()
 
-    payload = build(
-        Paths(args.aoi_root, args.checkpoint, args.run_json, args.out),
-        args.chips,
-        args.divergence_chip,
-    )
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    blob = json.dumps(payload, separators=(",", ":"))
-    args.out.write_text(blob)
-    logger.info(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB)")
+    if args.page_only:
+        blob = args.out.read_text()
+    else:
+        payload = build(
+            Paths(args.aoi_root, args.checkpoint, args.run_json, args.out),
+            args.chips,
+            args.divergence_chip,
+            args.threshold,
+            args.baseline_threshold,
+            args.skip_chips,
+            args.n_scored,
+        )
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        blob = json.dumps(payload, separators=(",", ":"))
+        args.out.write_text(blob)
+        logger.info(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB)")
 
     if args.template.exists():
         # </script> anywhere inside the payload would close the host tag early.
