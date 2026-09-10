@@ -6,9 +6,15 @@ from geo_graphs import geograph, metrics
 from tests.conftest import barbell_graph, curvy_graph, drop_edges, grid_graph
 
 
-def shifted(G: nx.MultiGraph, dx: float) -> nx.MultiGraph:
-    """The same graph translated along x, so every road is displaced by ``dx``."""
-    offset = np.array([dx, 0.0])
+def shifted(G: nx.MultiGraph, dx: float, dy: float = 0.0) -> nx.MultiGraph:
+    """The same graph translated, so every road moves by ``(dx, dy)``.
+
+    On an axis-aligned grid a translation along one axis alone leaves the roads
+    parallel to that axis lying on top of themselves, so the *perpendicular*
+    displacement is ``dx`` for half the roads and zero for the other half. Equal
+    ``dx`` and ``dy`` displace every road by the same amount instead.
+    """
+    offset = np.array([dx, dy])
     return geograph.build(
         [geograph.oriented_pts(G, u, v, k) + offset for u, v, k in G.edges(keys=True)]
     )
@@ -53,6 +59,92 @@ def test_deterministic():
     curvy = curvy_graph()
     H = drop_edges(curvy, 0.2)
     assert metrics.apls(curvy, H).score == metrics.apls(curvy, H).score
+
+
+def length_error(score: float, n_pairs: int, unlanded: int, no_path: int) -> float:
+    """Pairs' worth of score lost to length disagreement alone."""
+    return (1.0 - score) * n_pairs - unlanded - no_path
+
+
+def test_pair_counts_describe_the_pairs_the_score_averages():
+    """The counts are instrumentation, so they have to add up to the score.
+
+    A pair scores 0 for one of three reasons. Two of them are counted directly;
+    the third is whatever deficit is left over, and it can be neither negative
+    nor larger than the number of pairs that actually reached a comparison.
+    """
+    curvy = curvy_graph()
+    for proposal in (curvy, drop_edges(curvy, 0.3), shifted(curvy, 12.0, 12.0)):
+        r = metrics.apls(curvy, proposal)
+        for score, pairs, unlanded, no_path in (
+            (r.gt_to_prop, r.n_pairs_gt, r.n_pairs_unlanded_gt, r.n_pairs_no_path_gt),
+            (
+                r.prop_to_gt,
+                r.n_pairs_prop,
+                r.n_pairs_unlanded_prop,
+                r.n_pairs_no_path_prop,
+            ),
+        ):
+            residual = length_error(score, pairs, unlanded, no_path)
+            assert residual >= -1e-9
+            assert residual <= pairs - unlanded - no_path + 1e-9
+
+
+def test_identity_lands_every_control_point():
+    curvy = curvy_graph()
+    r = metrics.apls(curvy, curvy)
+    assert (r.n_landed_gt, r.n_landed_prop) == (r.n_control_gt, r.n_control_prop)
+    assert (r.n_pairs_unlanded_gt, r.n_pairs_no_path_gt) == (0, 0)
+
+
+def test_severing_the_network_is_counted_as_lost_routes_not_lost_landings():
+    """The two ways a pair scores 0 are different failures and stay apart."""
+    barbell = barbell_graph()
+    bridge = max(barbell.edges(keys=True), key=lambda e: barbell.edges[e]["length"])
+    severed = barbell.copy()
+    severed.remove_edge(*bridge)
+
+    r = metrics.apls(barbell, severed)
+    assert r.n_pairs_no_path_gt > 0
+    assert r.n_pairs_unlanded_gt == 0  # every road is still drawn, just disconnected
+
+
+def test_max_snap_prices_displacement_only_by_refusing_to_land():
+    """The module docstring's third property, as an assertion.
+
+    Every road is moved 12 m off its line. At the committed ``max_snap`` the
+    control points still land and the routes still measure the same length, so
+    the score barely moves. Below the displacement nothing lands at all and the
+    score collapses to zero -- and the collapse is entirely unlanded pairs, so
+    the metric never charges for the 12 m as displacement.
+    """
+    grid = grid_graph()
+    moved = shifted(grid, 12.0, 12.0)
+
+    far = metrics.apls(grid, moved, max_snap=25.0)
+    assert far.score > 0.9
+    assert far.n_landed_gt == far.n_control_gt
+    assert far.n_pairs_unlanded_gt == 0
+
+    near = metrics.apls(grid, moved, max_snap=5.0)
+    assert near.n_landed_gt == 0
+    assert near.score == pytest.approx(0.0)
+    assert near.n_pairs_unlanded_gt == near.n_pairs_gt
+    # Lowering the radius removed landings and nothing else: the pair set is
+    # fixed by the source graph and the spacing, so it cannot move.
+    assert near.n_pairs_gt == far.n_pairs_gt
+
+
+def test_lowering_max_snap_cannot_raise_the_score():
+    """A smaller radius can only drop a landing, never find a nearer edge."""
+    curvy = curvy_graph()
+    moved = shifted(curvy, 9.0, 9.0)
+    results = [metrics.apls(curvy, moved, max_snap=r) for r in (5.0, 10.0, 15.0, 25.0)]
+
+    assert [r.gt_to_prop for r in results] == sorted(r.gt_to_prop for r in results)
+    assert [r.prop_to_gt for r in results] == sorted(r.prop_to_gt for r in results)
+    assert [r.n_landed_gt for r in results] == sorted(r.n_landed_gt for r in results)
+    assert len({r.n_pairs_gt for r in results}) == 1
 
 
 def test_iou_bounds():

@@ -42,7 +42,10 @@ Three properties to know before reading a number off this module:
 * **Geometry reaches the score only through snapping.** A road drawn nearly
   ``max_snap`` off its true line still snaps, still measures the same length,
   and still scores 1. Displacement below that threshold is deliberately
-  invisible; see EXPERIMENT_LOG.md 2026-09-01 (later).
+  invisible; see EXPERIMENT_LOG.md 2026-09-01 (later). Where displacement does
+  reach the score, it does so by denying a control point any edge to snap to,
+  which :class:`APLSResult`'s landing and pair counts separate from the two
+  other ways a pair scores 0.
 
 ``make apls-explainer`` builds a page that draws real scored pairs, with their
 routes, on real tiles.
@@ -88,6 +91,17 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 class APLSResult:
     """A scored comparison of two road graphs.
 
+    The counts below decompose each directional score exactly. A pair scores 0
+    for one of three reasons, and one directional score plus its three pair
+    counts recovers which::
+
+        1 - score == (n_pairs_unlanded + n_pairs_no_path + length_error) / n_pairs
+
+    where ``length_error`` is the shortfall summed over the pairs that did
+    reach a comparison. Only that last term is a *geometric* penalty; the first
+    is a control point that found no edge within ``max_snap``, the second a
+    pair of snapped points the target graph cannot route between.
+
     Attributes:
         score: Harmonic mean of the two directional scores, in ``[0, 1]``.
         gt_to_prop: Ground-truth routes measured on the proposal. Falls when
@@ -100,6 +114,21 @@ class APLSResult:
             ``prop_to_gt`` direction. Running far above ``n_control_gt`` means
             the proposal carries more curved edges than the truth does, which
             is traced-geometry noise rather than extra road.
+        n_landed_gt: Of ``n_control_gt``, how many found an edge of the
+            proposal within ``max_snap``. The rest have no ``l_b`` at all.
+        n_landed_prop: Of ``n_control_prop``, how many found an edge of the
+            ground truth within ``max_snap``.
+        n_pairs_gt: Control point pairs entering the ``gt_to_prop`` mean, after
+            unreachable and sub-``min_path_length`` routes are dropped. Fixed
+            by the truth graph and ``spacing`` alone, so ``max_snap`` cannot
+            move it.
+        n_pairs_prop: The same for ``prop_to_gt``.
+        n_pairs_unlanded_gt: Pairs of ``n_pairs_gt`` scoring 0 because at least
+            one endpoint did not land.
+        n_pairs_unlanded_prop: The same for ``prop_to_gt``.
+        n_pairs_no_path_gt: Pairs of ``n_pairs_gt`` scoring 0 because both
+            endpoints landed but the proposal cannot route between them.
+        n_pairs_no_path_prop: The same for ``prop_to_gt``.
     """
 
     score: float
@@ -107,13 +136,45 @@ class APLSResult:
     prop_to_gt: float
     n_control_gt: int
     n_control_prop: int
+    n_landed_gt: int = 0
+    n_landed_prop: int = 0
+    n_pairs_gt: int = 0
+    n_pairs_prop: int = 0
+    n_pairs_unlanded_gt: int = 0
+    n_pairs_unlanded_prop: int = 0
+    n_pairs_no_path_gt: int = 0
+    n_pairs_no_path_prop: int = 0
 
     def __repr__(self) -> str:
         return (
             f"APLS(score={self.score:.4f}, gt->prop={self.gt_to_prop:.4f}, "
             f"prop->gt={self.prop_to_gt:.4f}, "
-            f"n_control={self.n_control_gt}/{self.n_control_prop})"
+            f"n_control={self.n_control_gt}/{self.n_control_prop}, "
+            f"landed={self.n_landed_gt}/{self.n_landed_prop})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _Directional:
+    """One direction of :func:`apls`, with the counts that decompose its score.
+
+    Attributes:
+        score: Mean route score over ``n_pairs`` pairs, in ``[0, 1]``.
+        n_control: Control points sampled from the source graph.
+        n_landed: Of those, how many found an edge of the target within
+            ``max_snap``.
+        n_pairs: Control point pairs that entered the mean.
+        n_pairs_unlanded: Pairs scoring 0 for want of a landing.
+        n_pairs_no_path: Pairs scoring 0 because the target cannot route
+            between two points that both landed.
+    """
+
+    score: float
+    n_control: int
+    n_landed: int
+    n_pairs: int
+    n_pairs_unlanded: int
+    n_pairs_no_path: int
 
 
 def _path_lengths(D: nx.MultiGraph, sources: list) -> dict:
@@ -132,7 +193,7 @@ def _directional(
     min_path_length: float,
     sampling: geograph.Sampling,
     rng: np.random.Generator,
-) -> tuple[float, int]:
+) -> _Directional:
     """Score paths measured on A against the same paths measured on B.
 
     Args:
@@ -148,11 +209,12 @@ def _directional(
         rng: Source of randomness for subsampling.
 
     Returns:
-        The mean route score in ``[0, 1]``, and the control point count.
+        The mean route score, and the counts that decompose it; see
+        :class:`_Directional`.
     """
     DA = geograph.densify(A, spacing, sampling)
     if DA.number_of_nodes() == 0:
-        return 0.0, 0
+        return _Directional(0.0, 0, 0, 0, 0, 0)
 
     control = list(DA.nodes)
     if max_control is not None and len(control) > max_control:
@@ -165,23 +227,37 @@ def _directional(
     len_a = _path_lengths(DA, control)
     len_b = _path_lengths(DB, sorted(set(match.values())))
 
+    # The three appends below are the three ways a pair reaches the mean, and
+    # keeping them apart is what lets a caller tell displacement (no landing)
+    # from severance (no route) from length error.
     scores = []
+    n_unlanded = 0
+    n_no_path = 0
     for i, a1 in enumerate(control):
         for a2 in control[i + 1 :]:
             la = len_a[a1].get(a2, NO_PATH)
             if not np.isfinite(la) or la < min_path_length:
                 continue  # unreachable, or too short for the ratio to be meaningful
             b1, b2 = match.get(a1), match.get(a2)
-            lb = (
-                len_b[b1].get(b2, NO_PATH)
-                if b1 is not None and b2 is not None
-                else NO_PATH
-            )
-            scores.append(
-                0.0 if not np.isfinite(lb) else 1.0 - min(1.0, abs(la - lb) / la)
-            )
+            if b1 is None or b2 is None:
+                n_unlanded += 1
+                scores.append(0.0)
+                continue
+            lb = len_b[b1].get(b2, NO_PATH)
+            if not np.isfinite(lb):
+                n_no_path += 1
+                scores.append(0.0)
+                continue
+            scores.append(1.0 - min(1.0, abs(la - lb) / la))
 
-    return (float(np.mean(scores)) if scores else 0.0), len(control)
+    return _Directional(
+        score=float(np.mean(scores)) if scores else 0.0,
+        n_control=len(control),
+        n_landed=len(match),
+        n_pairs=len(scores),
+        n_pairs_unlanded=n_unlanded,
+        n_pairs_no_path=n_no_path,
+    )
 
 
 def apls(
@@ -220,16 +296,31 @@ def apls(
             ``max_control`` is ``None``.
 
     Returns:
-        The combined score, both directional scores, and each direction's
-        control point count.
+        The combined score, both directional scores, and per direction the
+        control point, landing and pair counts that decompose them.
     """
     rng = np.random.default_rng(seed)
     args = (spacing, max_snap, max_control, min_path_length, sampling)
-    fwd, n_control_gt = _directional(truth, proposal, *args, rng)
-    rev, n_control_prop = _directional(proposal, truth, *args, rng)
+    fwd = _directional(truth, proposal, *args, rng)
+    rev = _directional(proposal, truth, *args, rng)
 
-    combined = 0.0 if fwd + rev == 0 else 2.0 * fwd * rev / (fwd + rev)
-    return APLSResult(combined, fwd, rev, n_control_gt, n_control_prop)
+    total = fwd.score + rev.score
+    combined = 0.0 if total == 0 else 2.0 * fwd.score * rev.score / total
+    return APLSResult(
+        score=combined,
+        gt_to_prop=fwd.score,
+        prop_to_gt=rev.score,
+        n_control_gt=fwd.n_control,
+        n_control_prop=rev.n_control,
+        n_landed_gt=fwd.n_landed,
+        n_landed_prop=rev.n_landed,
+        n_pairs_gt=fwd.n_pairs,
+        n_pairs_prop=rev.n_pairs,
+        n_pairs_unlanded_gt=fwd.n_pairs_unlanded,
+        n_pairs_unlanded_prop=rev.n_pairs_unlanded,
+        n_pairs_no_path_gt=fwd.n_pairs_no_path,
+        n_pairs_no_path_prop=rev.n_pairs_no_path,
+    )
 
 
 def _f1(precision: float, recall: float) -> float:
