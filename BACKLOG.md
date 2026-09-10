@@ -5,6 +5,35 @@ proposing new architectural work.
 
 ## Evaluation harness
 
+- **19% of the reported APLS is snapping slack, and the metric says so itself.**
+  `metrics.py`'s docstring already states that displacement below `max_snap` is
+  deliberately invisible. Priced 2026-09-10 (`scripts/snap_sweep.py`): the
+  proposal scores 0.7976 at `max_snap` 25 and **0.6453 at 5**, the ceiling 0.9720
+  and 0.9315. **13.4% of truth control points have proposal road within 25 m but
+  not within 5 m**, and APLS charges nothing for them. Do not change the default:
+  25.0 is what agrees with the reference to 3e-5 and what makes 0.7976 comparable
+  to the published Vegas column. This is a diagnostic, on the same footing as
+  `sampling="uniform"`. Note the mechanism is *only* unmatched points — a pair
+  whose ends both land keeps exactly its `l_b`, since splitting preserves path
+  length and the nearest edge does not change with the radius.
+
+- **Under `"reference"` sampling, APLS is closer to a junction-and-endpoint
+  metric than a length metric.** **78.2% of truth control points are the graph's
+  own nodes**, because straight edges receive no interior control points. Buffer
+  coverage, being length-weighted, disagrees with APLS landing rates by 5.6–8.8
+  points at 5 m, always more forgiving. The ceiling pins the cause: 1.3% of truth
+  *length* lies beyond 5 m of ceiling road against 6.9% of truth *control
+  points*. This sharpens the sampling-density entry below from a weighting
+  concern into a statement about what the metric is measuring. Untested and one
+  field away: landing rate split by node versus interior control point, which
+  needs `densify` to report which nodes it added.
+
+- **The ceiling is not reachable even in principle.** Ceiling `prop_to_gt`
+  carries a `nopath` loss of 0.0069 at every `max_snap` including 25 — both
+  endpoints land, on the truth graph, and the truth graph cannot route between
+  them. That is truth-graph disconnection, not decoder error, and every
+  "fraction of ceiling" figure in this project inherits it as a floor.
+
 - **Harness ceiling is ~0.90 APLS on a perfect mask, and it is intrinsic.**
   Asymmetric: gt→prop 0.95, prop→gt 0.82. The cause is non-planarity, not
   tuning — the truth graph has 20 edge pairs that cross with no shared node
@@ -146,18 +175,42 @@ proposing new architectural work.
 
 ## Model and training
 
-- **`cleanup.clean`'s three constants have never been tuned against a metric
-  that can see what they break.** `simplify_tolerance=2.0`, `spur_length=20.0`
-  and `snap_tolerance=8.0` were only ever evaluated against APLS, whose decoder
-  ceiling is 0.9720 — so APLS is nearly blind to the decoder's main failure. The
-  junction F1 decoder ceiling is **0.8814**, meaning `skeletonize -> simplify ->
-  snap(8 px)` destroys 18% of truth junctions from a *perfect* mask. On a
-  396x324 px chip an 8 px snap radius fuses genuinely distinct junctions, and a
-  20 m spur rule removes real short stubs. A joint sweep against
-  `metrics.junction_prf` runs against a frozen checkpoint, the same shape as
-  `scripts/threshold_sweep.py`, and is the cheapest unaddressed measurement in
-  this file. Measure the achievable fraction of that 0.1186 before assuming it
-  is recoverable.
+- **`spur_length` is mistuned, and the fix is not collectable yet.** Swept
+  2026-09-10 (`scripts/cleanup_sweep.py`, 4x4x4, both arenas). Correcting an
+  earlier claim here: the three constants had never been swept against *any*
+  metric, not merely against APLS. `spur_length` is the whole effect —
+  `simplify_tolerance` is inert (0.0004 of ceiling junction F1 across an 8x
+  range) and `snap_tolerance` matters 5x less. On a perfect mask, relaxing the
+  prune recovers **52% of the 0.1186 junction-F1 decoder loss** (+0.0618,
+  t +7.07, 101 chips better / 10 worse); the residual 48% is a genuine decoder
+  floor. On the *model's* output the gain is +0.0075 at t +0.61, not resolvable,
+  because tightening lets skeleton noise through and the false junctions cancel
+  the real ones. **The constants are coupled to mask quality and should be
+  re-swept whenever the model improves** — nothing in the repo knows that today.
+
+- **Retuning the decoder widens the model-to-ceiling gap.** Junction F1@10 gap is
+  +0.1723 at the shipped setting and +0.2073 at `s0.5_p10_n4`, because the
+  ceiling rises faster than the model does. After retuning, junction loss is more
+  a model problem and less a decoder problem, which argues for Stage 2 or a better
+  segmentation model over further decoder work.
+
+- **A free +0.0120 APLS is on the table, and the optimum is not bracketed.**
+  `s0.5_p10_n4` scores +0.0120 (t +2.96, CI [+0.0040, +0.0201]) with junction F1
+  flat; `spur_length` 20 to 10 alone is +0.0054 APLS and +0.0070 junction F1.
+  That is over half the entire gap-closing oracle ceiling for no model work.
+  Two things to settle before flipping a default. **Spur 5 is the grid's low end
+  *and* the ceiling optimum**, so run spur 2 and 3 first. And the domination is
+  matching-radius-specific: at junction radius 5 the shipped setting is the
+  model-arena maximum, rank 1 of 64, and it sits at the high-precision end of the
+  junction precision/recall frontier (jP 0.7693 / jR 0.7148). If junction
+  precision is the goal, F1 is the wrong referee and shipped is defensible.
+  Changing the default invalidates every committed artifact, so it wants a
+  clean-break rebuild rather than a quiet edit.
+
+- **Do not read the simplify axis on APLS.** Control-point counts move with
+  `simplify_tolerance` (the ceiling carries 53.0 proposal control points at 0.5
+  against 41.4 at 1.0), so the estimator is not held fixed along it. The effect
+  is 0.004 and no single mechanism covers both arenas.
 
 - ~~**Reorder the decoder to `simplify -> snap -> link -> prune`.**~~ Closed
   2026-09-10. The census found `clean()`'s first `prune_spurs` destroys 47% of

@@ -1204,3 +1204,159 @@ the database changes under it. Overpass-versus-pbf agreement was never actually
 validated and remains open; `ox.graph_from_bbox` defaults to `retain_all=False`,
 so the Overpass path returns only the largest weakly connected component, and
 that divergence was deliberately not replicated.
+
+---
+
+## 2026-09-10 (later) — Two sweeps into the decoder, and what APLS cannot see
+
+Both follow from the previous entry's finding that the decoder's own loss is
+0.0280 of APLS but 0.1186 of junction F1. Neither retrains anything.
+
+### `cleanup.clean`'s constants: half the junction loss is one badly chosen number
+
+`scripts/cleanup_sweep.py`, 4x4x4 factorial over `simplify_tolerance`,
+`spur_length` and `snap_tolerance`, both arenas (model proposal and perfect-mask
+ceiling) at every grid point, 155-chip holdout, 22.5 min. The shipped row
+reproduces `link_oracle.json`'s baseline to the digit, and the pipeline-prefix
+sharing that makes the grid affordable was proven against `cleanup.clean` on 384
+(chip, arena, grid point) triples with exact geometry fingerprints, 0 mismatches.
+
+**`spur_length` is the entire effect.** 1-D spans through the shipped setting:
+
+| axis | model APLS | model jF1@10 | ceiling jF1@10 |
+|---|---|---|---|
+| `simplify_tolerance` | 0.0070 | 0.0018 | 0.0004 |
+| `spur_length` | **0.0624** | **0.0809** | **0.1656** |
+| `snap_tolerance` | 0.0102 | 0.0112 | 0.0312 |
+
+`simplify_tolerance` is inert. The 8 px snap radius, which looked like the
+obvious culprit, costs the ceiling 0.0312 against the 20 m spur rule's 0.1656.
+
+**The precision/recall split is the mechanism.** `spur_length` 40 down to 5:
+
+| arena | precision | recall |
+|---|---|---|
+| ceiling | 0.9782 → 0.9756 (flat) | 0.6528 → 0.8831 |
+| model | 0.7939 → 0.7102 | 0.5858 → 0.7962 |
+
+On a perfect mask pruning buys essentially no precision and costs enormous
+recall: it is pure destruction, since every deleted stub takes its junction with
+it as the attachment point drops from degree 3 to degree 2. On real model output
+precision genuinely climbs with pruning. **`prune_spurs` is a noise filter and
+its correct setting is a function of mask noise, nothing else.**
+
+**How much of the 0.1186 is recoverable.** On the ceiling, `s0.5_p5_n4` gives
+junction F1@10 +0.0618 (t +7.07, CI [+0.0445, +0.0790], 101 chips better / 10
+worse), so **52% is a badly chosen constant and 48% is a genuine decoder floor**.
+The share is stable across matching radius: 47.7% at 5 px, 52.1% at 10, 56.2% at
+20.
+
+**On the actual model that gain does not materialise.** Best model-arena junction
+F1 is +0.0075 at t +0.61, CI spanning zero. Tightening the constants lets
+skeleton noise through and the false junctions cancel the real ones recovered.
+The extra stubs the model keeps are largely invented, which the OSM crosscheck
+already established.
+
+**Retuning widens the model-to-ceiling gap rather than closing it**: +0.1723 at
+the shipped setting, +0.1988 at `s2_p10_n8`, +0.2073 at `s0.5_p10_n4`, because
+the ceiling rises faster than the model does. After retuning, junction loss is
+*more* a model problem and *less* a decoder problem. That points at Stage 2 or a
+better segmentation model, not at further decoder tuning.
+
+**A free APLS gain is sitting there.** `s0.5_p10_n4` is +0.0120 APLS (t +2.96,
+CI [+0.0040, +0.0201]) with junction F1 flat. Moving `spur_length` 20 to 10 and
+nothing else is +0.0054 APLS and +0.0070 junction F1 together. For scale, the
+entire gap-closing oracle ceiling was +0.0224, so **over half of it is available
+by changing one number**, with no model.
+
+**Two caveats that keep this from being a simple win.** The domination is
+matching-radius-specific: at junction radius 5 the shipped setting is the
+model-arena *maximum*, rank 1 of 64, and none of the eight configs that dominate
+it at radius 10 beats it at radius 5. And the shipped setting sits on the
+junction precision/recall frontier at its high-precision end (jP 0.7693 /
+jR 0.7148), so if precision is the goal, F1 is the wrong referee. Also: spur 5 is
+the grid's low end *and* the ceiling optimum, so the true optimum may lie below
+it and is not bracketed. Settle that with a short run at spur 2 and 3 before
+committing a default.
+
+Do not read the simplify axis on APLS: control-point counts move with it (the
+ceiling carries 53.0 proposal control points at 0.5 against 41.4 at 1.0), so the
+estimator is not held fixed along that axis. The effect is 0.004 and no single
+mechanism covers both arenas.
+
+### `max_snap`: 19% of the reported score is snapping slack
+
+`scripts/snap_sweep.py`, `max_snap` in {5, 10, 15, 25} on the same holdout, 57 s.
+`metrics.apls`'s default is unchanged at 25.0 and every score at 25 reproduces
+`link_oracle.json` bit-for-bit; `APLSResult` gained landing and pair counts as
+additive fields with defaults, and the reference test still passes at 1e-4.
+
+The module docstring already said displacement below `max_snap` is deliberately
+invisible. This prices it.
+
+| arena | snap 25 | snap 5 | survives |
+|---|---|---|---|
+| proposal | 0.7976 | 0.6453 | **80.9%** |
+| ceiling | 0.9720 | 0.9315 | 95.8% |
+
+**The unmatched-versus-displacement split this was designed around is not a real
+distinction.** A pair whose endpoints both land keeps exactly the `l_b` it had,
+because splitting an edge preserves path length and the nearest edge does not
+change with the radius. A smaller radius can only refuse to land points. The
+unlanded term therefore exceeds 100% of the drop (proposal gt→prop: −0.1539 =
+unlanded +0.2088, nopath −0.0297, length −0.0252), the other terms falling as
+fewer pairs survive to be compared. Displacement is the cause; unmatched points
+are the whole mechanism.
+
+**The number that answers the question is the landing-rate difference**, which
+isolates control points that are present but off the line:
+
+| | present, 5–25 m off | never within 25 m |
+|---|---|---|
+| proposal gt→prop | **13.4%** | 2.9% |
+| proposal prop→gt | 12.9% | 7.3% |
+| ceiling gt→prop | 5.7% | 1.2% |
+| ceiling prop→gt | **0.0%** | 0.0% |
+
+Radius is not a tradeoff axis: the Pareto frontier is the single point 25.0 in
+both arenas with zero monotonicity violations, which follows from
+`inject_points` taking the nearest edge inside the radius.
+
+**Containment is one-way and exact.** The ceiling's `prop_to_gt` is flat at every
+radius with 6320/6320 landing at 5 m, because every ceiling edge is traced from a
+mask rasterized from the truth graph. The reverse fails at 5.7%, because
+`prune_spurs(20)` deletes truth stubs and `snap_junctions(8)` moves truth
+junctions. The proposal arena is nearly symmetric instead, since the model both
+misses and invents.
+
+**The buffer cross-check disagrees, and that is the finding.** At 5 m the two
+measures differ by 5.6–8.8 points on the same chips, buffer always the more
+forgiving, gap widening as the radius shrinks. The cause is measurable: **78.2%
+of truth control points are the graph's own nodes**, because reference sampling
+places no interior control point on a straight edge. APLS's control points
+cluster at junctions and dead ends; buffer coverage is length-weighted and
+dominated by accurate straight middles. The ceiling pins it — 1.3% of truth
+*length* lies beyond 5 m of ceiling road against 6.9% of truth *control points*,
+a factor of 5.
+
+So under reference sampling on a grid city, **APLS is closer to a
+junction-and-endpoint metric than a length metric**. That is a structural
+property of the estimator, and it connects to the existing note that straight
+edges receive no interior control points.
+
+Not measured, and the direct test of that explanation: landing rate split by node
+versus interior control point. One field away, `densify` would have to report
+which nodes it added. The alternative it cannot rule out is that the gap is truth
+roads wholly absent rather than displaced.
+
+### The ceiling is not reachable even in principle
+
+Ceiling `prop_to_gt` carries a `nopath` loss of **0.0069 at every radius,
+including 25**: both endpoints land, on the truth graph, and the truth graph
+cannot route between them. That is truth-graph disconnection rather than decoder
+error, and every "fraction of ceiling" figure in this project inherits it as a
+floor.
+
+Six proposal chips zero out at `max_snap` 5 (img1638 has 6 truth control points
+and 3 scored pairs, so losing 2 landings takes a direction to 0 and the harmonic
+mean with it). The median, 0.6978, is the more robust read at that radius.
