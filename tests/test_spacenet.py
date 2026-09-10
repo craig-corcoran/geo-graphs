@@ -303,6 +303,6 @@ def test_noding_drops_degenerate_slivers(tmp_path):
 
     line = LineString([(0.0, 0.0), (10.0, 0.0)])
     sliver = LineString([(5.0, 0.0), (5.0, 0.0)])
-    pieces = spacenet._node_network([line, sliver])
+    pieces = geograph.node_network([line, sliver])
 
     assert all(LineString(p).length > 0 for p in pieces)

@@ -26,7 +26,6 @@ import rasterio
 from pyproj import CRS, Transformer
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import LineString, shape
-from shapely.ops import unary_union
 
 from . import geograph, raster, tiles
 from .data import TileSample, TileSource
@@ -49,7 +48,6 @@ _CHIP_KEY = re.compile(r"(img\d+)$")
 
 #: Shortest noded segment worth keeping, in pixels. Below this a piece is a
 #: rounding artifact of the intersection, not a road.
-_MIN_SEGMENT_PX = 1e-6
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,42 +186,9 @@ def labels_to_graph(labels_path: Path, tile: Tile) -> nx.MultiGraph:
             xs, ys = to_tile.transform(coords[:, 0], coords[:, 1])
             lines.append(LineString(tiles.world_to_px(tile, np.column_stack([xs, ys]))))
 
-    graph = geograph.build(_node_network(lines), tol=1e-3)
+    graph = geograph.build(geograph.node_network(lines), tol=1e-3)
     graph.graph["resolution"] = tile.resolution
     return graph
-
-
-def _node_network(lines: list[LineString]) -> list[np.ndarray]:
-    """Split lines at every point where they meet, so junctions become nodes.
-
-    SpaceNet ships each road as one LineString running straight through its
-    intersections. A side street's endpoint lands on a main road's *interior*,
-    which is a junction on the ground but shares no vertex in the file, so
-    building a graph from the features as given leaves a pile of disconnected
-    stubs — one Vegas chip gives 33 edges in 30 components.
-
-    OSM does this noding for us, which is why the OSM path never needed it.
-
-    Args:
-        lines: Road centerlines in tile pixel coordinates.
-
-    Returns:
-        Polylines split at every intersection, ready for :func:`geograph.build`.
-    """
-    if not lines:
-        return []
-    noded = unary_union(lines)
-    parts = getattr(noded, "geoms", [noded])
-    return [
-        np.asarray(part.coords, dtype=float)
-        for part in parts
-        # unary_union can emit a degenerate zero-length piece at an
-        # intersection. Kept, it becomes a self-loop that adds two to the
-        # junction's degree and no geometry at all.
-        if isinstance(part, LineString)
-        and len(part.coords) >= 2
-        and part.length > _MIN_SEGMENT_PX
-    ]
 
 
 class SpaceNetTileSource:

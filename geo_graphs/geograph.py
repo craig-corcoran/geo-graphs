@@ -16,10 +16,14 @@ from typing import Literal
 import networkx as nx
 import numpy as np
 from shapely.geometry import LineString, Point
+from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
 #: Relative tolerance below which the reference treats an edge as straight.
 REFERENCE_CURVED_EPS = 0.012
+
+#: Shortest piece :func:`node_network` will keep, in pixels.
+_MIN_SEGMENT_PX = 1e-6
 
 #: How control points are spaced along edges.
 #:
@@ -38,6 +42,43 @@ def polyline_length(pts: np.ndarray) -> float:
     if len(pts) < 2:
         return 0.0
     return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+
+
+def node_network(lines: list[LineString]) -> list[np.ndarray]:
+    """Split lines at every point where they meet, so junctions become nodes.
+
+    :func:`build` fuses *endpoints* that coincide, so a source that runs a road
+    straight through its intersections produces disconnected stubs rather than
+    a network: a side street's endpoint lands on a main road's *interior*, which
+    is a junction on the ground but shares no vertex. One Vegas chip of SpaceNet
+    labels gives 33 edges in 30 components without this pass.
+
+    Which sources need it is not obvious and the failure is silent, so it is
+    worth stating per source. SpaceNet ships each road as one LineString and
+    needs it. OSM read through ``osmnx`` arrives already noded and does not. OSM
+    read from a ``.osm.pbf`` extract is raw ways and does, which is the same
+    shape of problem as SpaceNet's.
+
+    Args:
+        lines: Road centerlines in tile pixel coordinates.
+
+    Returns:
+        Polylines split at every intersection, ready for :func:`build`.
+    """
+    if not lines:
+        return []
+    noded = unary_union(lines)
+    parts = getattr(noded, "geoms", [noded])
+    return [
+        np.asarray(part.coords, dtype=float)
+        for part in parts
+        # unary_union can emit a degenerate zero-length piece at an
+        # intersection. Kept, it becomes a self-loop that adds two to the
+        # junction's degree and no geometry at all.
+        if isinstance(part, LineString)
+        and len(part.coords) >= 2
+        and part.length > _MIN_SEGMENT_PX
+    ]
 
 
 def build(edges: Iterable[np.ndarray], tol: float = 1e-6) -> nx.MultiGraph:
