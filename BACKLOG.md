@@ -54,9 +54,21 @@ proposing new architectural work.
   the ranking of any comparison already made. Do not change the default sampling
   to fix it — `"reference"` is what agrees with published numbers to 3e-5.
 
-- **TOPO metric not implemented.** The plan calls for APLS *and* TOPO; only APLS
-  exists. TOPO is the more local measure and would help localize where the
-  ceiling above is lost.
+- **TOPO metric not implemented, and its reference provenance is unresolved.**
+  The plan calls for APLS *and* TOPO; only APLS exists. Two first-party local
+  metrics now sit beside it — `metrics.buffer_length_prf` weights by road length
+  and `metrics.junction_prf` by junction count — but neither is TOPO and neither
+  has a published reference. The house rule wants validation against one.
+  Reconnaissance found that `tests/reference/` vendors only APLS scoring
+  (`VENDORED` maps exactly two upstream paths) and nothing TOPO-shaped is in the
+  venv or the local caches. Recalled but unverified: upstream `CosmiQ/apls`
+  carries `apls/topo_metric.py` beside `apls/apls.py`. Whether the pinned
+  `apls-0.1.0` sdist ships it is one network call using the URL the faithfulness
+  test already pins — fetch the tarball and list its members. If it does, TOPO
+  gets the APLS treatment: vendor byte-for-byte, extend `VENDORED`, adapt beside
+  it. If not, the reference has to come from GitHub or from Biagioni & Eriksson
+  directly, which is weaker provenance. The primitives TOPO needs already exist
+  as `geograph.densify` plus `nx.single_source_dijkstra_path_length`.
 - ~~**Control-point sampling differs from the reference.**~~ Done 2026-08-23.
   `sampling="reference"` is now the default and agrees to 3e-5; the dense
   `"uniform"` rule is kept as an opt-in for diagnosis. The old 0.08 test
@@ -78,10 +90,37 @@ proposing new architectural work.
 
 - ~~**No imagery yet.**~~ Done 2026-09-01. The 0.71 GB sample is loaded through
   `spacenet.SpaceNetTileSource`, reprojected to UTM and noded. Ten chips per AOI.
-- **Only the sample is downloaded.** Ten Vegas chips is about 1 km², far too
-  little to train on; validation swings wildly between epochs. The 24 GB
-  `SN3_roads_train_AOI_2_Vegas.tar.gz` is the next pull now that the loader is
-  proven. Disk has room.
+- ~~**Only the sample is downloaded.**~~ Done. The full 24 GB Vegas AOI is
+  extracted at `data/AOI_2_Vegas`: 989 chips, 981 with labels, split 785 train
+  / 196 val. Paris, Shanghai and Khartoum exist only as 10-chip samples and are
+  separate downloads.
+
+- **OSM now comes from a pinned local extract, and Overpass agreement is
+  unvalidated.** `data/nevada-latest.osm.pbf` (MD5
+  `5c750d8e270510e12dce81711c201491`) is read through `WAY_SOURCE_REGISTRY`.
+  The reason is reproducibility rather than the rate limiting that forced it:
+  an Overpass query cannot satisfy the content-hashed run-identity rule because
+  the database moves under it. The two sources have never been compared on the
+  same tile — the comparison test exists and is `network`-marked but has never
+  run — and they are known to differ in three ways: `ox.graph_from_bbox`
+  defaults to `retain_all=False` so the Overpass path keeps only the largest
+  weakly connected component, osmnx simplifies degree-2 chains, and the pbf path
+  nodes explicitly while osmnx arrives pre-noded.
+
+- **`osm.ground_truth_graph` has always dropped disconnected components.**
+  `retain_all=False` is osmnx's default and nothing here ever overrode it, so
+  every OSM truth graph this repo has pulled — including the one behind the
+  0.876 roundtrip ceiling — silently kept only the largest weakly connected
+  component. Nobody chose that. Whether it is the right behaviour for a *truth*
+  graph is a live question; it is definitely wrong for the crosscheck, where a
+  disconnected alley is exactly the road being looked for, and the pbf path
+  deliberately does not replicate it.
+
+- **Two chips yield an empty OSM `drive` network without explanation.**
+  `img1268` (732 m `residential`) and `img1279` (323 m `unclassified`) should
+  have produced non-empty drive networks and did not; suspected `access` tags
+  the filter excludes, unverified. Affects 2 of 155 chips and only the step 0
+  gate, not the length or purity numbers.
 - **Noding depends on exact intersections.** `shapely.ops.unary_union` splits
   only where geometries truly meet. Real SpaceNet labels do, but a line ending a
   fraction of a pixel short of another is left disconnected and silently costs
@@ -106,6 +145,27 @@ proposing new architectural work.
   2026-09-08.
 
 ## Model and training
+
+- **`cleanup.clean`'s three constants have never been tuned against a metric
+  that can see what they break.** `simplify_tolerance=2.0`, `spur_length=20.0`
+  and `snap_tolerance=8.0` were only ever evaluated against APLS, whose decoder
+  ceiling is 0.9720 — so APLS is nearly blind to the decoder's main failure. The
+  junction F1 decoder ceiling is **0.8814**, meaning `skeletonize -> simplify ->
+  snap(8 px)` destroys 18% of truth junctions from a *perfect* mask. On a
+  396x324 px chip an 8 px snap radius fuses genuinely distinct junctions, and a
+  20 m spur rule removes real short stubs. A joint sweep against
+  `metrics.junction_prf` runs against a frozen checkpoint, the same shape as
+  `scripts/threshold_sweep.py`, and is the cheapest unaddressed measurement in
+  this file. Measure the achievable fraction of that 0.1186 before assuming it
+  is recoverable.
+
+- ~~**Reorder the decoder to `simplify -> snap -> link -> prune`.**~~ Closed
+  2026-09-10. The census found `clean()`'s first `prune_spurs` destroys 47% of
+  interior endpoints, which looked like an argument for reordering on its own
+  merits. Scored: **+0.0008 APLS**, CI [-0.0025, +0.0040]. It decomposes into
+  `gt_to_prop` +0.0055 (t +2.31) and `prop_to_gt` -0.0042 (t -3.00) — both
+  halves resolvable, and they cancel. Dropping the first prune walks the same
+  trade curve the mask threshold already walks. Not worth making.
 
 - ~~**clDice loss not implemented.**~~ Implemented and measured 2026-09-09.
   `soft_cldice_loss` ships in `model.py`; `cldice_weight` defaults to 0.0, a
@@ -185,8 +245,26 @@ proposing new architectural work.
 - **Stage 2: direct graph-tensor prediction (Sat2Graph).** Predict vertex
   presence plus directional edge slots per cell instead of a mask. Fixes
   connectivity in the loss rather than in post-hoc heuristics, and admits
-  non-planar structure. Optional per the plan's own scoping — but now the only
-  route past the ~0.90 ceiling above, which is measured rather than asserted.
+  non-planar structure. Optional per the plan's own scoping. Its target is now
+  better quantified than "the ~0.90 ceiling": on the SpaceNet holdout the
+  decoder's own loss is 0.0280 of APLS but **0.1186 of junction F1**, so what
+  skeletonisation destroys is junction structure, and a decoder that emits a
+  graph directly is aimed squarely at that.
+
+- ~~**Learned gap closing / link prediction.**~~ Measured out 2026-09-10 without
+  building a model. The candidate pool exists (2,040 train positives at R=60,
+  `label_snap` 10) and a perfect oracle is worth **+0.0224 APLS** (t +4.53, CI
+  [+0.0127, +0.0322]), 12.9% of the reachable headroom. Three things close it:
+  the A/B/C/D ablation ladder cannot resolve its arms against a paired sem of
+  0.005, so the experiment returns "no detectable difference" whatever is true;
+  the OSM crosscheck says ~7 in 8 zero-purity stubs are invented rather than
+  unlabelled roads, so the ceiling was not measured against incomplete truth;
+  and under attachment weighting the technique is *harmful*, adding 2.67
+  junctions per chip of which only 0.49 are real. See `EXPERIMENT_LOG.md`
+  2026-09-10. **Residual worth keeping:** a purity-filtered heuristic gap closer
+  (`both_high_purity`) keeps 84% of the APLS gain at 28% of the junction damage
+  with 188 edges instead of 443, and sits on the Pareto frontier. That is an
+  afternoon and no model.
 - **Stage 3: parametric curve fitting.** B-splines or arc-and-clothoid fits to
   extracted centerlines, optimized with chamfer plus a curvature regularizer.
   The most on-thesis part for inverse procedural modeling, and the smallest.

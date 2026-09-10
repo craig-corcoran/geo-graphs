@@ -962,3 +962,245 @@ test split.
 Root cause of the zero ceiling is unexamined. Likely every edge is shorter than
 `min_path_length`, so no control-point pair survives, but that is a guess and
 not a measurement.
+
+---
+
+## 2026-09-10 — Gap closing measured out, three ways
+
+### Change under test
+
+Whether a learned link predictor reconnecting severed roads is worth building.
+The pipeline has no repair operation at all: `prune_spurs` removes and
+`snap_junctions` merges, and nothing ever adds an edge. The motivating fact was
+that at the tuned threshold `gt_to_prop` is pinned near 0.823 and the mask
+threshold cannot move it — dropping 0.02 to 0.01 buys +0.0041 `gt_to_prop` and
+costs −0.0553 `prop_to_gt`, so the mask is saturated and further pixels are
+noise.
+
+No model was built. Four measurements were made first, and they say not to.
+
+### The candidate pool exists
+
+`scripts/endpoint_census.py`, 981 chips against the frozen `vegas_best.pt` at
+threshold 0.02. Two gates were fixed before the numbers existed.
+
+| gate | rule | measured at `label_snap` 10 |
+|---|---|---|
+| pool size | >2,000 comfortable, 500–2,000 workable | 1,529 at R=25, 2,040 at R=60 |
+| distribution shift | val rate within 1.5x of train | 0.684 against 0.691 |
+
+Both pass, the first narrowly. Train and val positive rates are
+indistinguishable at R>=25, so the predictor could train on in-fold proposals
+without out-of-fold generation; the shift that exists is in candidate *count*
+(val chips carry 1.80 more interior endpoints, p=0.015), not in label mix.
+
+Three structural findings. `clean()` destroys **47.0%** of train interior
+endpoints before the shipped decoder emits its graph, because its first
+`prune_spurs(20)` removes exactly the stubs a severed road leaves. Endpoint-edge
+candidates subsume endpoint-endpoint ones for coverage in all eight
+split-and-radius cells, which is geometric rather than incidental: if another
+endpoint lies within R, its incident edge does too. And **47% of candidate
+endpoints have a stub that never touches the label mask**.
+
+### A snap sweep cannot validate labels, and the reason is structural
+
+The labeller projects both candidate ends onto the truth graph with
+`inject_points(truth, [a, b], max_dist=label_snap)`. Sweeping `label_snap` was
+intended to test whether positives were snapping artifacts. It cannot.
+`query_nearest` returns the globally nearest edge whenever it falls inside the
+radius, and `LineString.project` does not consult the radius at all, so
+`truth_dist` is bit-identical across radii whenever both ends land. A positive
+can become undeterminable but never negative.
+
+Confirmed empirically: **0 of 41,368 positive-instances flipped to negative** in
+any split, radius or target cell. That column is a property of the code, not
+evidence about label quality. Positive sets nest, so `label_snap=10` positives
+are a strict subset of `label_snap=25` positives.
+
+### Stub purity does discriminate, and the answer is bad
+
+Fraction of a candidate endpoint's incident polyline lying on the label mask,
+sampled at 1 px. At R=60, train:
+
+| population | high purity (>=0.5) |
+|---|---|
+| all candidate endpoints | 23.0% |
+| positives at `label_snap` 25 | 17.7% |
+| positives at `label_snap` 15 | 26.3% |
+| positives at `label_snap` 10 | 39.1% |
+
+At the loose radius **the positive class is less likely to lie on labelled road
+than the pool it was drawn from**. Snap 10 is the only setting that inverts
+this, which is why it is the committed value; the cost is that two thirds of
+candidates become undeterminable there.
+
+Two controls say the metric reads the graph correctly rather than being broken.
+Non-stub edges average 0.749 purity against 0.394 for stub edges. And dilating
+the truth mask to a 17 px band still leaves ~41% of candidate endpoints missing
+the road entirely, so the mass at zero is not a mask-width artifact — though the
+middle of the distribution is dilation-sensitive, so 0.5 is a reporting
+threshold rather than a calibrated one.
+
+### The ceiling: +0.0224 APLS
+
+`scripts/link_oracle.py`, six arms on the 155-chip reporting holdout at
+threshold 0.02. Arm 0 reproduces `outputs/threshold_holdout.json` to **exact
+float equality** (0.7976468051731842 and both directional scores), so the deltas
+are trustworthy.
+
+| arm | edges | APLS | delta vs baseline |
+|---|---|---|---|
+| baseline `clean()` | 0 | 0.7976 | — |
+| reorder only | 0 | 0.7984 | +0.0008 (t +0.5) |
+| `join@R60_snap10` | 262 | 0.8147 | +0.0170 (t +3.6) |
+| **`both@R60_snap10`** | 443 | **0.8201** | **+0.0224 (t +4.5)** |
+| `both@R60_snap25` | 1140 | 0.8025 | +0.0048 (t +0.7) |
+
+95% CI [+0.0127, +0.0322], 103 chips better / 38 worse. `gt_to_prop` +0.0450
+(t +5.78), `prop_to_gt` −0.0021 (t −0.63, CI spanning zero), so a perfect oracle
+costs essentially nothing in the reverse direction. It recovers **12.9%** of the
+0.1743 gap between the shipped decoder and a perfect mask.
+
+**The decoder reorder is not worth making.** +0.0008, CI [−0.0025, +0.0040]. It
+decomposes into `gt_to_prop` +0.0055 (t +2.31) and `prop_to_gt` −0.0042
+(t −3.00): both halves individually resolvable, and they cancel. Dropping the
+first prune walks the same trade curve the mask threshold already walks. That
+closes the question the census's 47% destruction rate opened.
+
+**The `label_snap` 25 positive class is affirmatively bad, not merely noisy.**
+Three of its arms score at or below doing nothing (`join@R25_snap25` 0.7933,
+`both@R25_snap25` 0.7958, against a 0.7976 baseline). Paired at R60, snap 25
+minus snap 10 is −0.0176 APLS (t −3.48), spending 0.0333 of `prop_to_gt` to buy
+0.0075 of `gt_to_prop`. An oracle scoring worse than inaction is the cleanest
+available verdict on a label set.
+
+One prediction failed: the shortcut class was expected to trade the two
+directions against each other. At snap 10 it improves both. The class that
+trades directions is snap-25 labelling, whichever positive kind it is applied to.
+
+### The stubs are invented, not unlabelled roads
+
+`scripts/osm_crosscheck.py` against a pinned Geofabrik extract
+(`nevada-latest.osm.pbf`, MD5 `5c750d8e270510e12dce81711c201491`), 155 chips.
+
+Step 0 gates on registration before anything else runs: OSM `drive` length near
+a SpaceNet way is mean 0.897 / median 0.995 at 8 px, against a diagonally
+shifted null control at mean 0.225. A 4x separation, so the frames genuinely
+register rather than both merely being dense with roads.
+
+SpaceNet is not badly under-labelled. Median per-chip ratio of OSM drivable to
+SpaceNet is **1.064**, and 97.5% of SpaceNet road length lies within 8 px of
+some OSM way. The surplus of `all` over `drive` is 60% `service` and 30%
+`footway`, which is why a third OSM network (`drivable` = `all` minus pedestrian
+classes) is carried: comparing against `all` would substantially be comparing
+against sidewalks.
+
+**The deciding number.** Of the 903 endpoints with zero purity against SpaceNet:
+
+| measured against | reach >=0.5 | any purity |
+|---|---|---|
+| OSM `drive` | 11 (1.2%) | 27 (3.0%) |
+| OSM `drivable` | 101 (11.2%) | 197 (21.8%) |
+| OSM `all` | 118 (13.1%) | 226 (25.0%) |
+
+Roughly **seven in eight zero-purity stubs are not on a way OSM maps either** —
+not a service road, not an alley, not a footpath. The corroborating fact: OSM
+adds 170 km of service roads across these chips and the endpoint zero-purity
+fraction falls only from 0.491 to 0.465. The extra mapped length is not where
+the stubs are.
+
+So `prop_to_gt` has been penalising the model mostly for real invention, and the
+oracle ceiling was not measured against materially incomplete truth. A genuine
+11–13% correction is owed, higher (19.6%) in the positive class specifically.
+
+The temporal caveat points the same way: OSM read in 2026 against 2015–2017
+imagery inflates OSM's length, so the real gap of that era is smaller than 1.064.
+
+### The stop is a property of gap closing, not of APLS
+
+APLS scores routes, so an edge counts in proportion to how many shortest paths
+cross it. The project's objective has moved toward a recognisable map, which
+weights presence and attachment instead. `buffer_length_prf` and `junction_prf`
+were added alongside `apls`, which is untouched — all 2,480 chip-arm APLS values
+reproduce bit-for-bit.
+
+As a share of each metric's own reachable headroom, `both@R60_snap10`:
+
+| metric | baseline | ceiling | delta | share of headroom |
+|---|---|---|---|---|
+| APLS | 0.7976 | 0.9720 | +0.0224 | **+12.8%** |
+| buffer F1 @10 | 0.9192 | 0.9947 | +0.0054 | +7.2% |
+| buffer F1 @5 | 0.8910 | 0.9926 | −0.0002 | −0.2% |
+| junction F1 @10 | 0.7091 | 0.8814 | −0.0240 | **−13.9%** |
+
+Coverage weighting shrinks the gain; attachment weighting reverses it. The one
+framing under which it looks better than APLS says is buffer *recall* alone
+(+0.0100, t +4.24), which refuses to charge for invented road.
+
+**The mechanism, measured.** Per chip the oracle adds 2.67 junctions (t +7.44)
+of which only 0.49 match a truth junction (t +5.57), so **82% of the junctions
+it creates are not on the ground**. Proposal junction count goes from 105% of
+truth's to 121%. Junction precision falls 0.0655 and is flat across matching
+radius (−0.062 / −0.066 / −0.064 at 5/10/20 px), so these are extra junctions
+rather than near-misses. The cause is structural: an endpoint-to-edge connector
+splits the target edge and creates a degree-3 node where the truth road simply
+continues. APLS charges nothing for it.
+
+The geometry agrees: 82.7 m of road drawn per chip buys ~22.5 m of newly covered
+truth length, and buffer precision at 5 m falls 0.0095 (t −6.41) while at 10 m
+it is flat. The straight chords are roughly in the right place, off the
+centreline.
+
+**The heavy tail does not flatten.** Zero-gain chips stay at 43–48% under every
+metric, and concentration gets worse: top-5 share of gain 0.34 → 0.42 → 0.54,
+Gini 0.83 → 0.89 as the buffer widens.
+
+### What it motivates
+
+Gap closing is not worth building as a learned stage. The ceiling is real
+(t +4.53) but small; the A/B/C/D ablation ladder cannot resolve its arms against
+a paired sem of 0.005, so the experiment would return "no detectable difference"
+whatever the truth; and on the attachment axis the technique is actively
+harmful.
+
+One decision the suite does change: filtering candidates on stub purity looked
+like a pure loss of 0.0035 under APLS, and across the suite it keeps 84% of the
+APLS gain at 28% of the junction damage using 188 edges instead of 443. It joins
+the Pareto frontier. A purity-filtered heuristic gap closer is a modest positive
+that costs no model.
+
+Per-edge marginals say the metrics disagree about *which* edge to add: Pearson
++0.22 between APLS and buffer F1@10, and 11 of APLS's top 50 edges are in
+coverage's top 50. Component joins help junction F1 (+0.0035/edge) while
+shortcuts hurt it (−0.0077/edge, negative on 113 of 224) — a distinction APLS
+cannot express, since it scores both positive.
+
+**The number this opens.** Junction F1's *decoder* ceiling is 0.8814, so
+`skeletonize → simplify → snap(8 px)` destroys 18% of truth junctions from a
+perfect mask. The comparable APLS figure is 0.0280. `cleanup.clean`'s three
+constants have only ever been evaluated against APLS, which is nearly blind to
+what they do. Sweeping them against `junction_prf` is the cheapest unaddressed
+measurement on the board.
+
+### Methodological notes
+
+`apls_uniform` contributed nothing: +0.976 per-edge correlation with `apls` and
+within 0.001 on every arm delta. Same metric sampled denser, not an independent
+check. `buffer_f1_20` rewards indiscriminate edge addition — at 20 m the
+dirtiest arm (1,140 edges) has the best delta while doing the worst junction
+damage — so report 5 and 10.
+
+The metric suite was added immediately after APLS returned an unwelcome answer
+on the same holdout, by the same process, with the same arms. `BACKLOG.md` has
+asked for a local metric since 2026-09-01, 21 commits before the oracle ran, and
+the objective genuinely moved from routing to a recognisable map. Neither
+defence is decisive alone. The risk did not bite here only because the new
+metrics returned a *worse* answer than the one they followed.
+
+Overpass rate-limited the crosscheck out of service for about two hours, which
+is why OSM now comes from a pinned extract. The deeper reason to keep it there:
+an Overpass query cannot satisfy the content-hashed run-identity rule, because
+the database changes under it. Overpass-versus-pbf agreement was never actually
+validated and remains open; `ox.graph_from_bbox` defaults to `retain_all=False`,
+so the Overpass path returns only the largest weakly connected component, and
+that divergence was deliberately not replicated.
