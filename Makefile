@@ -19,6 +19,8 @@ COVERAGE_OUT ?= outputs
 SWEEP_ARGS ?=
 CENSUS_ARGS ?=
 ORACLE_ARGS ?=
+CLEANUP_ARGS ?=
+SNAP_ARGS ?=
 CROSSCHECK_ARGS ?=
 SHOWCASE_ARGS ?=
 EXPLAINER_ARGS ?=
@@ -38,7 +40,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -96,6 +98,12 @@ census:  ## Count dead-end endpoints and gap-closing candidates on a frozen chec
 
 link-oracle:  ## Score the oracle gap-closer on the reporting holdout (no training; writes outputs/link_oracle.json)
 	$(UV) run python $(SCRIPTS)/link_oracle.py $(ORACLE_ARGS)
+
+cleanup-sweep:  ## Sweep cleanup.clean's three constants against every metric on a frozen checkpoint (no training; writes outputs/cleanup_sweep.json)
+	$(UV) run python $(SCRIPTS)/cleanup_sweep.py $(CLEANUP_ARGS)
+
+snap-sweep:  ## Price APLS's snapping slack at four max_snap radii, model and ceiling (diagnostic, not a reportable score; writes outputs/snap_sweep.json)
+	$(UV) run python $(SCRIPTS)/snap_sweep.py $(SNAP_ARGS)
 
 osm-crosscheck:  ## Cross-check SpaceNet labels and stub purity against OSM (reads OSM_EXTRACT; writes outputs/osm_crosscheck.json)
 	$(UV) run python $(SCRIPTS)/osm_crosscheck.py \
