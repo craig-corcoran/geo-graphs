@@ -9,6 +9,7 @@ dependencies = [
     "networkx>=3.6.1",
     "numpy>=2.5.2",
     "osmnx>=2.1.1",
+    "pyogrio>=0.13.0",
     "pyproj>=3.7.2",
     "rasterio>=1.5.1",
     "scikit-image>=0.26.0",
