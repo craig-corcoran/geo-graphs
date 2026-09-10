@@ -3,7 +3,15 @@ import numpy as np
 import pytest
 
 from geo_graphs import geograph, metrics
-from tests.conftest import barbell_graph, curvy_graph, drop_edges
+from tests.conftest import barbell_graph, curvy_graph, drop_edges, grid_graph
+
+
+def shifted(G: nx.MultiGraph, dx: float) -> nx.MultiGraph:
+    """The same graph translated along x, so every road is displaced by ``dx``."""
+    offset = np.array([dx, 0.0])
+    return geograph.build(
+        [geograph.oriented_pts(G, u, v, k) + offset for u, v, k in G.edges(keys=True)]
+    )
 
 
 def test_identity_scores_one():
@@ -76,3 +84,129 @@ def test_severing_a_bridge_costs_far_more_than_its_length():
 
     assert lost_fraction < 0.10
     assert 1.0 - metrics.apls(barbell, severed).score > 3 * lost_fraction
+
+
+def test_buffer_length_identity_scores_one():
+    curvy = curvy_graph()
+    result = metrics.buffer_length_prf(curvy, curvy, buffer=5.0)
+    assert result.precision == pytest.approx(1.0)
+    assert result.recall == pytest.approx(1.0)
+    assert result.f1 == pytest.approx(1.0)
+
+
+def test_buffer_length_recall_tracks_the_length_that_went_missing():
+    """Coverage is length-weighted, so half the roads removed costs about half."""
+    grid = grid_graph()
+    kept = drop_edges(grid, 0.5)
+    fraction = geograph.total_length(kept) / geograph.total_length(grid)
+
+    result = metrics.buffer_length_prf(grid, kept, buffer=5.0)
+    assert result.precision == pytest.approx(1.0)  # nothing invented
+    # The surviving edges cover a little past their own ends, where a removed
+    # edge left a junction behind, so recall sits just above the kept fraction.
+    assert fraction <= result.recall < fraction + 0.05
+
+
+def test_buffer_length_barely_notices_a_severed_bridge():
+    """The metric this suite exists to add, against the one it does not replace.
+
+    Cutting the single edge joining two halves is the failure APLS is built to
+    punish. Buffer coverage charges only the bridge's own length for it, which
+    is the whole point of adding a length-weighted metric: the two disagree by
+    an order of magnitude on the same damage.
+    """
+    barbell = barbell_graph()
+    bridge = max(barbell.edges(keys=True), key=lambda e: barbell.edges[e]["length"])
+    severed = barbell.copy()
+    severed.remove_edge(*bridge)
+
+    coverage_lost = 1.0 - metrics.buffer_length_prf(barbell, severed, buffer=5.0).recall
+    apls_lost = 1.0 - metrics.apls(barbell, severed).score
+    assert coverage_lost < 0.05
+    assert apls_lost > 8 * coverage_lost
+
+
+def test_buffer_length_sees_displacement_only_through_the_buffer():
+    """Below the buffer, geometric error is invisible by construction."""
+    grid = grid_graph()
+    moved = shifted(grid, 8.0)
+    assert metrics.buffer_length_prf(grid, moved, buffer=5.0).f1 < 0.75
+    assert metrics.buffer_length_prf(grid, moved, buffer=10.0).f1 > 0.95
+
+
+def test_buffer_length_empty_proposal_scores_zero():
+    result = metrics.buffer_length_prf(curvy_graph(), nx.MultiGraph(), buffer=10.0)
+    assert result.recall == pytest.approx(0.0)
+    assert result.f1 == pytest.approx(0.0)
+
+
+def test_junction_identity_scores_one():
+    curvy = curvy_graph()
+    result = metrics.junction_prf(curvy, curvy, radius=5.0)
+    assert result.n_matched == result.n_truth == result.n_proposal
+    assert result.f1 == pytest.approx(1.0)
+    assert result.degree_agreement == pytest.approx(1.0)
+    assert result.mean_offset == pytest.approx(0.0)
+
+
+def test_junction_degree_agreement_falls_when_a_crossing_loses_an_arm():
+    """A four-way crossing recovered as a T still matches on position."""
+    grid = grid_graph()
+    crossing = next(
+        e
+        for e in grid.edges(keys=True)
+        if grid.degree(e[0]) == 4 and grid.degree(e[1]) == 4
+    )
+    damaged = grid.copy()
+    damaged.remove_edge(*crossing)
+
+    result = metrics.junction_prf(grid, damaged, radius=5.0)
+    assert result.n_matched == result.n_truth  # both ends are still junctions
+    assert result.f1 == pytest.approx(1.0)
+    assert 0.0 < (result.degree_agreement or 0.0) < 1.0
+
+
+def test_junction_matching_is_one_to_one():
+    """Two truth junctions cannot both be satisfied by one proposal junction.
+
+    Greedy nearest-neighbour matching would score this 1.0 by using the single
+    proposal junction twice, which is the inflation the assignment prevents.
+    """
+    truth = geograph.build(
+        [
+            np.array([[0.0, 0.0], [0.0, -50.0]]),
+            np.array([[0.0, 0.0], [-50.0, 0.0]]),
+            np.array([[0.0, 0.0], [6.0, 0.0]]),
+            np.array([[6.0, 0.0], [6.0, 50.0]]),
+            np.array([[6.0, 0.0], [56.0, 0.0]]),
+        ]
+    )
+    proposal = geograph.build(
+        [
+            np.array([[3.0, 0.0], [3.0, -50.0]]),
+            np.array([[3.0, 0.0], [-50.0, 0.0]]),
+            np.array([[3.0, 0.0], [53.0, 0.0]]),
+        ]
+    )
+
+    result = metrics.junction_prf(truth, proposal, radius=10.0)
+    assert (result.n_truth, result.n_proposal, result.n_matched) == (2, 1, 1)
+    assert result.recall == pytest.approx(0.5)
+    assert result.precision == pytest.approx(1.0)
+
+
+def test_junction_scores_one_when_neither_graph_has_a_junction():
+    line = geograph.build([np.array([[0.0, 0.0], [100.0, 0.0]])])
+    result = metrics.junction_prf(line, line, radius=5.0)
+    assert (result.n_truth, result.n_proposal) == (0, 0)
+    assert result.f1 == pytest.approx(1.0)
+    assert result.degree_agreement is None
+
+
+def test_junction_beyond_the_radius_does_not_match():
+    grid = grid_graph()
+    result = metrics.junction_prf(grid, shifted(grid, 8.0), radius=5.0)
+    assert result.n_truth > 0
+    assert result.n_matched == 0
+    assert result.f1 == pytest.approx(0.0)
+    assert result.degree_agreement is None

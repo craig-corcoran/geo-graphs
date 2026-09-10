@@ -85,3 +85,22 @@ published leaderboard numbers as-is. `sampling="uniform"` samples control points
 far more densely; it is the better tool for localizing *where* a proposal loses
 score, but it is a different estimator and drifts by up to 0.06. Report on the
 defaults.
+
+APLS scores routes, so an edge counts in proportion to how many shortest paths
+cross it. That is the right weighting for routing and the wrong one for a map
+someone reads: a missing cul-de-sac costs APLS almost nothing and is a visible
+defect to the people who live on it. Two metrics beside it weight presence
+instead.
+
+| function | question | weights by |
+|---|---|---|
+| `metrics.buffer_length_prf` | is this street here at all? | road length |
+| `metrics.junction_prf` | is it attached to the right cross-streets? | junction count |
+
+`buffer_length_prf` is the share of truth road length lying within `X` metres of
+proposal road and the reverse, which makes it blind to topology by construction:
+a road cut in two one pixel apart is still fully covered. `junction_prf` matches
+nodes of degree 3 or more one-to-one within a radius and also reports how often
+matched junctions agree on degree. Neither is comparable to a leaderboard
+number, and neither replaces APLS. Sweep the buffer: displacement below it is
+invisible, so the buffer is the geometric tolerance the number is quoted at.
