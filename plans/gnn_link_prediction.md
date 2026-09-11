@@ -27,6 +27,45 @@ bar.
 A link predictor over the proposal graph is that mechanism. Whether it beats the
 trade curve above is the experiment; the curve is the baseline it must clear.
 
+## Answer
+
+It does not clear it by enough to be worth building as a learned stage, and the
+ceiling was measured before any model existed. Three findings close it
+independently, each recorded in `EXPERIMENT_LOG.md` 2026-09-10.
+
+**The ceiling is +0.0224 APLS** (t +4.53, CI [+0.0127, +0.0322]), 12.9% of the
+reachable headroom, for a *perfect* oracle. A real predictor gets a fraction of
+that.
+
+**The ablation ladder cannot resolve its own arms at that scale.** Plausible
+differences between a distance gate, an MLP and a GNN are ~0.002 against a
+paired sem of 0.005, so the experiment returns "no detectable difference"
+whatever is true. Since separating those arms was the point, the experiment
+cannot answer its own question.
+
+**Under attachment weighting the technique is harmful.** It adds 2.67 junctions
+per chip of which only 0.49 match a truth junction, so 82% of the junctions it
+creates are not on the ground, and junction F1 falls 0.0240. An endpoint-to-edge
+connector splits the target edge and makes a degree-3 node where the truth road
+simply continues. APLS charges nothing for that; a map someone looks at does.
+
+A fourth measurement removed the most likely objection. The OSM crosscheck found
+that roughly seven in eight zero-purity stubs lie on no way OSM maps either, so
+the ceiling was not measured against materially incomplete truth and
+`prop_to_gt` has been penalising real invention.
+
+### What remains worth doing
+
+One thing, and it needs no model. `both_high_purity` keeps 84% of the APLS gain
+at 28% of the junction damage, using 188 edges instead of 443, and sits on the
+Pareto frontier across all three metric families. A purity-filtered heuristic gap
+closer is an afternoon's work and a modest, honest positive.
+
+Everything below stands as the design that was validated on the way to that
+answer. The Tier 0 and Tier 1 sections carry the measurements; the design
+decisions above them are reusable by any later link-prediction work, since most
+were established by measurement rather than chosen.
+
 ## Where the code starts
 
 - `cleanup.clean` is `simplify_edges` → `prune_spurs(20)` → `snap_junctions(8)` →
@@ -364,7 +403,9 @@ against a connector following the probability ridge, since a straight chord
 across a curve adds length error the metric charges for; the bias has a known
 direction and is not corrected here.
 
-### Tier 2 — the ablation ladder
+### The ladder Tier 1 ruled out
+
+The learned stage would have been separated by this ladder:
 
 | arm | model | isolates |
 |---|---|---|
@@ -373,21 +414,20 @@ direction and is not corrected here.
 | C | B plus the explicit `prop_dist` feature | does topology matter at all? |
 | D | GNN over existing proposal edges | does learned propagation beat one hand-computed topological feature? |
 
-C against D is the question the project is actually asking. If a single
-shortest-path feature matches several rounds of message passing, message passing
-bought nothing here, and that is a result reported at the same length as a
-positive one.
+C against D was the question worth asking. It is not askable here: with a total
+ceiling of +0.0224 APLS, plausible differences between these arms sit around
+0.002 against a paired sem of 0.005 over 155 chips. Resolving 0.002 at t = 2
+would need roughly 25x the chips, about 3,900; all of Vegas is 981.
 
-### Tier 3 — sweeps
+This is the transferable lesson rather than a fact about gap closing. **Check
+that an ablation can resolve its own arms before building the arms**, by pairing
+the ceiling measurement with the sem of the metric the arms will be compared on.
+Both numbers were available here before any model was written.
 
-Radius `R`; endpoint-endpoint against endpoint-edge candidates; hop count from 1
-to 4; feature ablations against arm C; connector geometry, straight against
-minimum-cost path; and whether candidate edges participate in message passing as
-a second relation type.
-
-Report every configuration with its per-metric numbers and identify the Pareto
-frontier across `gt_to_prop` and `prop_to_gt`. No configuration is disqualified
-by a threshold on either axis.
+An attribute-inference task escapes this by sample size: nodes placed along
+roads give tens of thousands of labelled items per split rather than a few
+hundred edges read through a chip-level aggregate, so node-level macro-F1 has
+error bars tight enough to separate the same arms.
 
 ## Measurement
 
@@ -433,42 +473,35 @@ an edit to remember reverting.
 Each runs against a frozen prior stage, so no target in this plan retrains the
 segmentation model.
 
-## Risks
+## Which risks bit
 
-**The positive class rests on stubs that are largely off the labelled road.**
-Even at the committed `label_snap = 10`, 61% of positives have a stub below the
-purity threshold, and 47% of all candidate endpoints have a stub that never
-touches the label mask at all. This is the largest known threat to the whole
-approach, it is not fixable by tightening the snap further without emptying the
-pool, and it is measured rather than bounded: Tier 1's snap-10 against snap-25
-`prop_to_gt` gap prices it in APLS, and arm 5 tests whether filtering on purity
-recovers anything.
+Recorded because the pattern is more useful than the list: the risk that killed
+this was not the one flagged as most likely.
 
-**The oracle is worth almost nothing.** The likeliest failure. It would mean the
-`gt_to_prop` loss is diffuse geometric error spread across every edge rather
-than concentrated in a few severing gaps. Tier 1 detects this in one pass, and
-the honest response is to redirect to junction classification or Sat2Graph-style
-decoding rather than to tune this line further.
+**The top-flagged risk did not bite.** "The positive class rests on stubs that
+are largely off the labelled road" was called the largest known threat. It was
+real — 47% of candidate endpoints have a stub that never touches the label mask —
+but the OSM crosscheck showed those stubs are genuinely invented rather than
+unlabelled roads, so the ceiling was measured against adequate truth and the
+number stood.
 
-**Candidate recall is capped well below 1.** About 5% of interior endpoints hold
-no candidate at any radius tested; the border margin excludes roughly half of
-all raw endpoints by construction; and at `label_snap = 10` two thirds of
-candidates are undeterminable, so no supervision reaches them. Any gap wider
-than `R` is unreachable too. Tier 3's radius sweep bounds the last of these, and
-candidate recall is reported separately from predictor precision so a model
-scoring well on a candidate set that never contained the real gaps is visible as
-such.
+**The risk that killed it was filed as "not a project risk."** The entry said
+"the GNN loses to arm C. Not a project risk. It is a result." That was wrong in
+a specific way: the problem was never that the GNN might lose, it was that the
+comparison could not be *run* at this effect size. A result requires a
+measurement that can distinguish the arms, and this one could not.
 
-**Class balance is mild, and the undeterminable class is not.** At
-`label_snap = 10`, `R = 60`, train carries 2,040 positives against 3,100
-negatives, so the labelled classes are close to balanced and neither
-subsampling nor a focal loss is obviously needed. The 9,784 undeterminable
-candidates are the real distributional problem: they are excluded from the loss
-but present at inference, so the predictor is asked to score a population it was
-never trained on.
+**One risk was mis-stated rather than wrong.** Class imbalance was expected to
+need subsampling or a focal loss; at `label_snap` 10 the labelled classes are
+close to balanced (2,040 positive against 3,100 negative). The real
+distributional problem is the two thirds of candidates that are undeterminable:
+excluded from the loss, present at inference.
 
-**The GNN loses to arm C.** Not a project risk. It is a result, and it is the
-one the ladder is built to detect.
+**And one hazard was not on the list at all.** The metric's choice is upstream of
+the verdict. Gap closing looks positive under route weighting and negative under
+attachment weighting, and nothing in the original plan considered that the answer
+might depend on which metric refereed. `metrics.buffer_length_prf` and
+`metrics.junction_prf` exist because of this.
 
 ## References
 
