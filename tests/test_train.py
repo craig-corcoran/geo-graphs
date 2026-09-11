@@ -543,37 +543,48 @@ def test_evaluate_tiles_on_an_empty_set_is_not_an_error():
     assert report.per_tile == ()
 
 
-def test_split_ids_holds_out_the_requested_fraction():
-    ids = tuple(f"img{i}" for i in range(100))
-    train_ids, val_ids = train.split_ids(ids, val_fraction=0.2, seed=0)
-
-    assert len(val_ids) == 20
-    assert len(train_ids) == 80
-    assert not set(train_ids) & set(val_ids)
-    assert set(train_ids) | set(val_ids) == set(ids)
-
-
-def test_split_ids_shuffles_rather_than_taking_a_contiguous_tail():
-    """SpaceNet chip numbers run along the ground.
-
-    A contiguous tail would be one neighbourhood held out, not a sample of the
-    city, and would flatter or punish the model depending on what is there.
-    """
-    ids = tuple(f"img{i}" for i in range(100))
-    _, val_ids = train.split_ids(ids, val_fraction=0.2, seed=0)
-    assert val_ids != ids[:20]
+def placed_source(n: int = 6, pitch: float = 2000.0) -> _FixedSource:
+    """Samples spread along easting, so a spatial split has somewhere to cut."""
+    sample = synthetic_sample(size=64)
+    return _FixedSource(
+        replace(sample, tile=replace(sample.tile, x_min=sample.tile.x_min + i * pitch))
+        for i in range(n)
+    )
 
 
-def test_split_ids_is_reproducible_and_seed_dependent():
-    ids = tuple(f"img{i}" for i in range(100))
-    assert train.split_ids(ids, 0.2, seed=0) == train.split_ids(ids, 0.2, seed=0)
-    assert train.split_ids(ids, 0.2, seed=1) != train.split_ids(ids, 0.2, seed=0)
+def test_assign_split_dispatches_through_the_registry():
+    source = placed_source()
+    assignment = train.assign_split(
+        source, "random", val_fraction=0.34, seed=0, block_m=1.0, buffer_m=0.0
+    )
+
+    assert len(assignment.val) == 2
+    assert set(assignment.train) | set(assignment.val) == set(source.ids())
+    assert assignment.dropped == ()
 
 
-def test_split_ids_always_holds_out_at_least_one():
-    train_ids, val_ids = train.split_ids(("a", "b", "c"), val_fraction=0.01, seed=0)
-    assert len(val_ids) == 1
-    assert len(train_ids) == 2
+def test_assign_split_loads_samples_only_for_a_spatial_split():
+    """`random` ignores position, so it must not pay to find out where anything is."""
+    source = placed_source()
+    loaded: list[str] = []
+    original = source.load
+    source.load = lambda i: (loaded.append(i), original(i))[1]
+
+    train.assign_split(source, "random", 0.34, 0, 1.0, 0.0)
+    assert loaded == []
+
+    train.assign_split(source, "blocked", 0.34, 0, 1000.0, 0.0)
+    assert sorted(loaded) == sorted(source.ids())
+
+
+def test_assign_split_drops_a_buffer_only_when_asked():
+    source = placed_source()
+    blocked = train.assign_split(source, "blocked", 0.34, 0, 1000.0, 3000.0)
+    buffered = train.assign_split(source, "buffered", 0.34, 0, 1000.0, 3000.0)
+
+    assert blocked.dropped == ()
+    assert buffered.dropped != ()
+    assert buffered.val == blocked.val
 
 
 def _decreasing_then_rising(config, monkeypatch, losses):

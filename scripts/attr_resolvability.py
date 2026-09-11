@@ -136,6 +136,10 @@ class ChipNodes:
         spacing: Node spacing in metres the nodes were placed at.
         klass: ``(N,)`` index into :data:`CLASSES` per node.
         way: ``(N,)`` OSM way id per node, as an index into a run-wide table.
+        node_length: ``(N,)`` metres of road each node stands for, which is its
+            piece's length divided by the nodes placed on it. Node counts are
+            proportional to length only up to the rounding that gives a short
+            piece its one node, so anything reported by length uses this.
         component: ``(N,)`` same-class connected component per node, as an
             index into a run-wide table. Components are chip-local: pieces are
             clipped at the chip edge, so a street crossing two chips is two
@@ -153,6 +157,7 @@ class ChipNodes:
     spacing: float
     klass: np.ndarray
     way: np.ndarray
+    node_length: np.ndarray
     component: np.ndarray
     n_other: int
     length_by_class: np.ndarray
@@ -418,6 +423,7 @@ def chip_nodes(
         spacing=spacing,
         klass=np.repeat(klass, counts),
         way=np.repeat(way_ids, counts),
+        node_length=np.repeat(lengths[keep] / counts, counts) if keep else np.zeros(0),
         component=np.repeat(component_ids, counts),
         n_other=n_other,
         length_by_class=np.bincount(klass, weights=lengths[keep], minlength=len(CLASSES)),

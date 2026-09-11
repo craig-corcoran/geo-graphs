@@ -20,7 +20,7 @@ from loguru import logger
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
 
-from . import cleanup, data, metrics, skeleton
+from . import cleanup, data, metrics, skeleton, split
 from .model import FUSION_REGISTRY, UNet, predict_mask, segmentation_loss
 
 #: Which validation number decides the best epoch.
@@ -79,6 +79,13 @@ class TrainConfig:
         coverage: How much lidar each crop is allowed to see, and in what
             shape. The endpoints ``full`` and ``none`` are the two runs the
             first stage of this work compares.
+        split: Registry key naming how ``train_ids`` and ``val_ids`` were
+            divided. Recorded rather than used: the ids are already resolved by
+            the time a config exists, and a run artifact that does not say how
+            they were drawn cannot be told apart from one drawn differently.
+        split_block_m: Block side length the spatial splitters used, in metres.
+        split_buffer_m: Training margin the buffered splitter dropped, in
+            metres.
     """
 
     train_ids: tuple[str, ...] = ("tile_0", "tile_2")
@@ -102,6 +109,9 @@ class TrainConfig:
     cldice_weight: float = 0.0
     fusion: str = "early"
     coverage: data.CoverageSampler = data.FULL_COVERAGE
+    split: str = "random"
+    split_block_m: float = 1280.0
+    split_buffer_m: float = 500.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,27 +966,44 @@ def build_source(
     )
 
 
-def split_ids(
-    ids: Sequence[str], val_fraction: float, seed: int
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Shuffle sample ids and hold out a fraction for validation.
+def assign_split(
+    source: data.TileSource,
+    key: str,
+    val_fraction: float,
+    seed: int,
+    block_m: float,
+    buffer_m: float,
+) -> split.Assignment:
+    """Divide a source's samples between training and validation.
 
-    Shuffled rather than taken in order, because SpaceNet chip numbering runs
-    along the ground: a contiguous tail is one neighbourhood, not a sample of
-    the city.
+    The spatial splitters need to know where each sample sits, which means
+    loading every one of them. That cost is paid only when one is asked for:
+    ``random`` ignores position, so it never touches the imagery.
 
     Args:
-        ids: Every available sample id.
-        val_fraction: Share to hold out.
-        seed: Seed for the shuffle.
+        source: Where samples come from.
+        key: A key of :data:`split.SPLIT_REGISTRY`.
+        val_fraction: Share of samples to hold out.
+        seed: Seeds the shuffle, whether over samples or over blocks.
+        block_m: Block side length for the spatial splitters, in metres.
+        buffer_m: Training margin the buffered splitter drops, in metres.
 
     Returns:
-        ``(train_ids, val_ids)``.
+        The assignment, whose ``dropped`` is non-empty only for ``buffered``.
     """
-    shuffled = list(ids)
-    np.random.default_rng(seed).shuffle(shuffled)
-    n_val = max(round(len(shuffled) * val_fraction), 1)
-    return tuple(shuffled[n_val:]), tuple(shuffled[:n_val])
+    ids = source.ids()
+    if key == "random":
+        placement = split.Placement(tuple(ids), np.zeros(len(ids)), np.zeros(len(ids)))
+    else:
+        logger.info(f"{key} split: placing {len(ids)} samples")
+        placement = split.placement_from_tiles(ids, [source.load(i).tile for i in ids])
+
+    kwargs: dict[str, float] = {}
+    if key in ("blocked", "buffered"):
+        kwargs["block_m"] = block_m
+    if key == "buffered":
+        kwargs["buffer_m"] = buffer_m
+    return split.SPLIT_REGISTRY[key](**kwargs).split(placement, val_fraction, seed)
 
 
 def main() -> None:
@@ -1056,6 +1083,27 @@ def main() -> None:
         default=defaults.coverage.mode,
         help="how much lidar each crop sees; full and none are the endpoints",
     )
+    parser.add_argument(
+        "--split",
+        choices=sorted(split.SPLIT_REGISTRY),
+        default=defaults.split,
+        help=(
+            "how samples are divided; the spatial keys load every sample to "
+            "place it, which random does not"
+        ),
+    )
+    parser.add_argument(
+        "--split-block-m",
+        type=float,
+        default=defaults.split_block_m,
+        help="block side length for the spatial splitters, in metres",
+    )
+    parser.add_argument(
+        "--split-buffer-m",
+        type=float,
+        default=defaults.split_buffer_m,
+        help="training margin the buffered splitter drops, in metres",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
@@ -1063,12 +1111,22 @@ def main() -> None:
     source, source_key = build_source(
         args.aoi_root, args.source, args.resolution, lidar=args.lidar
     )
-    train_ids, val_ids = split_ids(source.ids(), args.val_fraction, args.seed)
-    logger.info(f"{source_key}: {len(train_ids)} train tiles, {len(val_ids)} val tiles")
+    assignment = assign_split(
+        source,
+        args.split,
+        args.val_fraction,
+        args.seed,
+        args.split_block_m,
+        args.split_buffer_m,
+    )
+    logger.info(
+        f"{source_key}: {args.split} split, {len(assignment.train)} train tiles, "
+        f"{len(assignment.val)} val tiles, {len(assignment.dropped)} dropped"
+    )
 
     config = TrainConfig(
-        train_ids=train_ids,
-        val_ids=val_ids,
+        train_ids=assignment.train,
+        val_ids=assignment.val,
         epochs=args.epochs,
         crop_size=args.crop_size,
         tile_size_m=args.tile_size,
@@ -1086,6 +1144,9 @@ def main() -> None:
         cldice_weight=args.cldice_weight,
         fusion=args.fusion,
         coverage=data.CoverageSampler(mode=args.coverage),
+        split=args.split,
+        split_block_m=args.split_block_m,
+        split_buffer_m=args.split_buffer_m,
     )
     result = train(config, source=source, checkpoint=args.checkpoint)
 
