@@ -24,6 +24,7 @@ import networkx as nx
 import numpy as np
 import rasterio
 from pyproj import CRS, Transformer
+from rasterio.transform import Affine
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from shapely.geometry import LineString, shape
 
@@ -125,6 +126,44 @@ def find_chips(aoi_root: Path, product: str | None = None) -> tuple[Chip, ...]:
     return tuple(sorted(chips, key=lambda c: int(c.image_id.removeprefix("img"))))
 
 
+def _dst_grid(
+    src: rasterio.DatasetReader, resolution: float
+) -> tuple[CRS, Affine, int, int]:
+    """The UTM grid a chip reprojects onto: ``(crs, transform, width, height)``.
+
+    Factored out so :func:`chip_tile` and :func:`_reproject_to_utm` derive the
+    grid from one piece of code; two copies would drift and place the same
+    chip's roads on two slightly different tiles.
+    """
+    to_wgs = Transformer.from_crs(src.crs, WGS84, always_xy=True)
+    lon, lat = to_wgs.transform(src.bounds.left, src.bounds.top)
+    dst_crs = tiles.utm_crs_for(lat, lon)
+    transform, width, height = calculate_default_transform(
+        src.crs, dst_crs, src.width, src.height, *src.bounds, resolution=resolution
+    )
+    # `calculate_default_transform` only leaves these unset when it is given a
+    # target width or height to solve for, which this call does not.
+    return dst_crs, transform, int(width), int(height)
+
+
+def chip_tile(path: Path, resolution: float = 1.0) -> Tile:
+    """The tile a chip reprojects onto, read from its header alone.
+
+    No pixels are read, so a caller needing only the georeferencing -- clipping
+    OSM to a chip's ground extent, say -- does not pay for the reprojection.
+
+    Args:
+        path: A chip's GeoTIFF.
+        resolution: Metres per pixel the tile is gridded at.
+
+    Returns:
+        The tile :func:`SpaceNetTileSource.load` would have returned with it.
+    """
+    with rasterio.open(path) as src:
+        dst_crs, transform, width, height = _dst_grid(src, resolution)
+    return tiles.tile_from_transform(dst_crs, transform[:6], width, height)
+
+
 def _reproject_to_utm(path: Path, resolution: float) -> tuple[np.ndarray, Tile]:
     """Load a GeoTIFF into its local UTM zone at a metric resolution.
 
@@ -133,13 +172,7 @@ def _reproject_to_utm(path: Path, resolution: float) -> tuple[np.ndarray, Tile]:
         ``[0, 1]`` and tile carries the reprojected georeferencing.
     """
     with rasterio.open(path) as src:
-        to_wgs = Transformer.from_crs(src.crs, WGS84, always_xy=True)
-        lon, lat = to_wgs.transform(src.bounds.left, src.bounds.top)
-        dst_crs = tiles.utm_crs_for(lat, lon)
-
-        transform, width, height = calculate_default_transform(
-            src.crs, dst_crs, src.width, src.height, *src.bounds, resolution=resolution
-        )
+        dst_crs, transform, width, height = _dst_grid(src, resolution)
         bands = np.zeros((src.count, height, width), dtype=np.float32)
         for index in range(src.count):
             reproject(

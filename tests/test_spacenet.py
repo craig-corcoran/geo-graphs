@@ -167,6 +167,21 @@ def test_resolution_is_a_real_parameter(tmp_path):
     assert fine.mask.shape[0] > coarse.mask.shape[0]
 
 
+def test_chip_tile_matches_the_tile_a_load_would_have_returned(tmp_path):
+    """The header-only path has to land on the same grid as the full load.
+
+    Two copies of the grid computation would drift, and a caller clipping OSM
+    to `chip_tile` while the model reads `load` would place roads on pixels the
+    imagery does not cover.
+    """
+    write_chip(tmp_path, "img1")
+    path = spacenet.find_chips(tmp_path)[0].image_path
+
+    for resolution in (0.5, 1.0, 2.0):
+        loaded = spacenet.SpaceNetTileSource(tmp_path, resolution=resolution).load("img1")
+        assert spacenet.chip_tile(path, resolution) == loaded.tile
+
+
 def test_labels_land_on_the_road_in_the_imagery(tmp_path):
     """The alignment check: a mask offset by a reprojection slip would fail."""
     write_chip(tmp_path, "img1", size=128)

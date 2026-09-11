@@ -21,6 +21,7 @@ CENSUS_ARGS ?=
 ORACLE_ARGS ?=
 CLEANUP_ARGS ?=
 SNAP_ARGS ?=
+RESOLVE_ARGS ?=
 CROSSCHECK_ARGS ?=
 SHOWCASE_ARGS ?=
 EXPLAINER_ARGS ?=
@@ -40,7 +41,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep attr-resolvability osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -104,6 +105,10 @@ cleanup-sweep:  ## Sweep cleanup.clean's three constants against every metric on
 
 snap-sweep:  ## Price APLS's snapping slack at four max_snap radii, model and ceiling (diagnostic, not a reportable score; writes outputs/snap_sweep.json)
 	$(UV) run python $(SCRIPTS)/snap_sweep.py $(SNAP_ARGS)
+
+attr-resolvability:  ## Price a road-class ablation before training anything: label counts and the macro-F1 noise floor per node spacing (reads OSM_EXTRACT; writes outputs/attr_resolvability.json)
+	$(UV) run python $(SCRIPTS)/attr_resolvability.py \
+	  --extract $(OSM_EXTRACT) $(RESOLVE_ARGS)
 
 osm-crosscheck:  ## Cross-check SpaceNet labels and stub purity against OSM (reads OSM_EXTRACT; writes outputs/osm_crosscheck.json)
 	$(UV) run python $(SCRIPTS)/osm_crosscheck.py \

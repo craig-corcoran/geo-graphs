@@ -31,7 +31,7 @@ from geo_graphs.osm import (
     graph_from_ways,
     ground_truth_graph,
     network_mask,
-    node_tagged,
+    node_sources,
     pbf_ways,
     read_extract,
     tagged_ways,
@@ -81,6 +81,7 @@ def synthetic_extract(tile, ways, pad_m: float = 250.0) -> WayExtract:
     return WayExtract(
         lines=lines,
         highway=highway,
+        osm_id=np.array([str(i) for i in range(len(ways))], dtype=object),
         passes=MappingProxyType(
             {key: network_mask(highway, tags, key) for key in NETWORK_FILTERS}
         ),
@@ -327,28 +328,25 @@ def test_to_pixels_round_trips_the_pixel_frame():
     assert np.asarray(line.coords) == pytest.approx(np.asarray(pts), abs=1e-4)
 
 
-def test_node_tagged_splits_a_crossing_and_keeps_both_classes():
+def test_node_sources_splits_a_crossing_and_keeps_both_sources():
     horizontal = LineString([(50.0, 256.0), (450.0, 256.0)])
     vertical = LineString([(256.0, 50.0), (256.0, 450.0)])
-    pieces = node_tagged([horizontal, vertical], ["residential", "service"])
+    pieces = node_sources([horizontal, vertical])
 
     assert len(pieces) == 4
-    assert (
-        sorted(highway for highway, _ in pieces) == ["residential"] * 2 + ["service"] * 2
-    )
+    assert sorted(source for source, _ in pieces) == [0, 0, 1, 1]
     assert sum(geograph.polyline_length(pts) for _, pts in pieces) == pytest.approx(800.0)
 
 
-def test_node_tagged_leaves_ways_that_never_meet_alone():
-    pieces = node_tagged(
-        [LineString([(0.0, 0.0), (10.0, 0.0)]), LineString([(0.0, 50.0), (10.0, 50.0)])],
-        ["primary", "service"],
+def test_node_sources_leaves_ways_that_never_meet_alone():
+    pieces = node_sources(
+        [LineString([(0.0, 0.0), (10.0, 0.0)]), LineString([(0.0, 50.0), (10.0, 50.0)])]
     )
-    assert sorted(highway for highway, _ in pieces) == ["primary", "service"]
+    assert sorted(source for source, _ in pieces) == [0, 1]
 
 
-def test_node_tagged_of_nothing_is_nothing():
-    assert node_tagged([], []) == []
+def test_node_sources_of_nothing_is_nothing():
+    assert node_sources([]) == []
 
 
 def test_graph_from_ways_does_not_node_its_input():
@@ -481,6 +479,38 @@ def test_read_extract_geometry_reaches_a_tile(tmp_path):
     # A pixel is a metre here, and OSM stores coordinates to 1e-7 degrees, so
     # the round trip is exact to about a centimetre and no further.
     assert way.pts == pytest.approx(np.asarray(placed), abs=0.02)
+
+
+def test_pbf_ways_carry_the_id_of_the_way_they_were_cut_from(tmp_path):
+    """Noding splits a way at every junction; the pieces still name their way.
+
+    The id is what groups pieces back into the way a mapper drew, so an
+    analysis that treats pieces as independent samples can tell that they
+    are not.
+    """
+    tile = vegas_tile(size_m=2048.0)
+    across = [[100.0, 1024.0], [1900.0, 1024.0]]
+    down = [[1024.0, 100.0], [1024.0, 1900.0]]
+    path = write_osm(
+        tmp_path / "cross.osm",
+        [
+            ("primary", [(lat, lon) for lon, lat in wgs84_line(tile, across).coords], {}),
+            (
+                "residential",
+                [(lat, lon) for lon, lat in wgs84_line(tile, down).coords],
+                {},
+            ),
+        ],
+    )
+    extract = read_extract(tiles.lonlat_bounds(tile, pad_m=250.0), path)
+    ways = pbf_ways(extract, tile, "drive")
+
+    # write_osm numbers its ways from 1001, in the order they were given.
+    by_id = {way.osm_id for way in ways}
+    assert len(ways) == 4
+    assert by_id == {"1001", "1002"}
+    assert {w.highway for w in ways if w.osm_id == "1001"} == {"primary"}
+    assert {w.highway for w in ways if w.osm_id == "1002"} == {"residential"}
 
 
 def test_way_source_registry_holds_factories():

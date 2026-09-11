@@ -70,11 +70,16 @@ class TaggedWay:
             tabulating length by class should report how often this is true
             rather than let the choice pass silently.
         pts: ``(N, 2)`` polyline in tile pixel coordinates.
+        osm_id: The id of the OSM way this piece was cut from, or ``None`` when
+            the source cannot name one. Noding splits a way at every junction
+            along it, so pieces are not independent samples of anything; this
+            is what groups them back into the way a mapper drew.
     """
 
     highway: str
     multi_valued: bool
     pts: np.ndarray
+    osm_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +253,7 @@ class WayExtract:
         passes: Per key of :data:`NETWORK_FILTERS`, whether each way survives
             that filter. Computed once at read because the filters are regex
             matches over every way, which is too slow to repeat per tile.
+        osm_id: Each way's OSM id, aligned with ``lines``.
         bounds: ``(N, 4)`` of ``(minx, miny, maxx, maxy)`` per way, so the ways
             near a tile are one vectorized comparison.
         extent: The ``(west, south, east, north)`` degrees that were read. A
@@ -259,6 +265,7 @@ class WayExtract:
 
     lines: np.ndarray
     highway: np.ndarray
+    osm_id: np.ndarray
     passes: Mapping[str, np.ndarray]
     bounds: np.ndarray
     extent: tuple[float, float, float, float]
@@ -330,9 +337,12 @@ def read_extract(
     """
     started = time.perf_counter()
     _, _, geometry, fields = read_ogr(
-        str(path), layer=EXTRACT_LAYER, bbox=bbox, columns=["highway", "other_tags"]
+        str(path),
+        layer=EXTRACT_LAYER,
+        bbox=bbox,
+        columns=["osm_id", "highway", "other_tags"],
     )
-    highway, other_tags = fields
+    osm_id, highway, other_tags = fields
 
     lines = shapely.from_wkb(geometry)
     # A way with no `highway` is a railway, a wall or a stream. A way with
@@ -342,11 +352,13 @@ def read_extract(
     keep &= shapely.get_num_coordinates(lines) >= 2
     lines = lines[keep]
     highway = highway[keep].astype(object)
+    osm_id = osm_id[keep].astype(object)
     tags = {key: _parse_other_tags(other_tags[keep], key) for key in FILTER_TAG_KEYS}
 
     extract = WayExtract(
         lines=lines,
         highway=highway,
+        osm_id=osm_id,
         passes=MappingProxyType(
             {key: network_mask(highway, tags, key) for key in NETWORK_FILTERS}
         ),
@@ -400,23 +412,20 @@ def _to_pixels(lines: np.ndarray, tile: Tile) -> list[LineString]:
     return [LineString(part) for part in np.split(px, ends)]
 
 
-def node_tagged(
-    lines: Sequence[LineString], highway: Sequence[str] | np.ndarray
-) -> list[tuple[str, np.ndarray]]:
-    """Split lines where they meet, carrying each piece's road class over.
+def node_sources(lines: Sequence[LineString]) -> list[tuple[int, np.ndarray]]:
+    """Split lines where they meet, saying which input way each piece came from.
 
     :func:`geograph.node_network` dissolves its input into one geometry, which
-    loses the per-way tag. Each piece is a run of exactly one input way, so the
-    tag is recovered by asking which way a point inside the piece lies on.
-    Collinear ways drawn twice are the exception: those dissolve into one
-    piece, and it takes whichever of them the index reports first.
+    loses every per-way attribute. Each piece is a run of exactly one input
+    way, so the source is recovered by asking which way a point inside the
+    piece lies on. Collinear ways drawn twice are the exception: those dissolve
+    into one piece, and it takes whichever of them the index reports first.
 
     Args:
         lines: Ways in tile pixel coordinates.
-        highway: Each way's ``highway`` value, aligned with ``lines``.
 
     Returns:
-        ``(highway, polyline)`` per piece.
+        ``(index into lines, polyline)`` per piece.
     """
     pieces = geograph.node_network(list(lines))
     if not pieces:
@@ -430,7 +439,7 @@ def node_tagged(
     )
     source = np.zeros(len(pieces), dtype=int)
     source[probe_index] = line_index
-    return [(highway[int(source[i])], piece) for i, piece in enumerate(pieces)]
+    return [(int(source[i]), piece) for i, piece in enumerate(pieces)]
 
 
 def pbf_ways(
@@ -487,13 +496,18 @@ def pbf_ways(
         return ()
 
     region = box(0, 0, tile.width, tile.height)
+    highway = extract.highway[keep]
+    osm_id = extract.osm_id[keep]
     return tuple(
         # A way in an extract carries one `highway` value; the several-valued
         # case is osmnx's simplification merging ways, not something OSM ships.
-        TaggedWay(highway=highway, multi_valued=False, pts=pts)
-        for highway, piece in node_tagged(
-            _to_pixels(extract.lines[keep], tile), extract.highway[keep]
+        TaggedWay(
+            highway=str(highway[source]),
+            multi_valued=False,
+            pts=pts,
+            osm_id=str(osm_id[source]),
         )
+        for source, piece in node_sources(_to_pixels(extract.lines[keep], tile))
         for pts in _clip(piece, region)
     )
 
