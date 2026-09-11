@@ -1670,3 +1670,63 @@ guarded on the AOI being present does that comparison, and passes today.
 **Segmentation is untouched.** `train.assign_split` still defaults to `random`,
 so `vegas_best.pt` and every APLS number measured on it keep their provenance.
 `train.main --split-file` is the path for a run that wants this split instead.
+
+---
+
+## 2026-09-11 — Road class is readable from the frozen decoder
+
+**Change under test.** `scripts/attr_probe.py`. The decoder of `vegas_best.pt`
+is frozen and sampled with `grid_sample` at every labelled node, four taps deep
+(bottleneck, three decoder levels, and the head), for 481 features per node. A
+classifier is fitted on those features alone, on the frozen spatial split's 615
+training chips, and scored on its 226 validation chips. 49,339 train and 15,944
+validation nodes at 20 m spacing.
+
+The question is the project's unexamined premise: a network trained only to say
+*road or not road* was never asked to distinguish classes, and if nothing in its
+features separates them, no graph model built on top can either.
+
+### It clears, and the control says so
+
+| arm | macro-F1 | accuracy | motorway | primary | secondary | tertiary | residential | unclassified |
+|---|---|---|---|---|---|---|---|---|
+| majority (residential) | 0.1165 | 0.5370 | 0 | 0 | 0 | 0 | 0.6988 | 0 |
+| linear probe | **0.3820** | 0.5800 | 0.1707 | 0.5445 | 0.2555 | 0.3118 | 0.8371 | 0.1723 |
+| MLP-128 | **0.4191** | 0.6190 | 0.2728 | 0.5751 | 0.2978 | 0.3320 | 0.8546 | 0.1823 |
+| shuffled labels (control) | 0.1242 | 0.1449 | 0.0490 | 0.2055 | 0.1489 | 0.1197 | 0.1722 | 0.0498 |
+
+The shuffled-label control is the falsifier and it lands on the baseline: 0.1242
+against 0.1165. Whatever the probe is reading, it is not a feature that encodes
+position or a train/validation mix-up, either of which would have lifted the
+control too.
+
+The linear probe beats the baseline by 0.266, which is 18 times the 0.0145
+standard error measured on this split. The signal is not merely present, it is
+**linearly decodable** from features the network learned for a different task.
+
+### What the numbers do and do not say
+
+**A floor, not a ceiling.** The decoder was trained on a binary objective and is
+frozen here. 0.42 is what falls out of features that were never asked for it;
+fine-tuning, or an encoder trained on the class objective, starts above this.
+
+**The rare classes are where the work is.** Residential reaches 0.855 and carries
+54% of the nodes. Motorway is 0.273 and unclassified 0.182, and one third of the
+macro average sits on those two. The MLP's whole advantage over the linear probe
+is concentrated there — motorway 0.171 to 0.273 — which is consistent with the
+rare classes being separable but not linearly.
+
+**The MLP-over-linear step is 0.037**, against a minimum detectable difference of
+0.018 to 0.036 on this split. A real architecture difference of that size is at
+the edge of what this evaluation set can call. An arm-to-arm difference much
+smaller than 3 macro-F1 points will not be reportable, which is the constraint
+the resolvability run predicted and this run confirms in the units that matter.
+
+**Where a graph model would earn its place.** Every arm here reads one node
+independently. Class is constant along a way by construction, so a model that
+propagates along the road can pool evidence over a whole street where the probe
+sees one 20 m sample. That is the specific structure the per-node arms cannot
+use, and it is the hypothesis the ablation would test.
+
+**Next.** Both Tier 0 checks are now answered: the task is resolvable, and the
+signal exists. Nothing further blocks building the model.
