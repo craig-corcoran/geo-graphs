@@ -1560,3 +1560,54 @@ ranges over 0.026–0.062 in max drift.
 every number measured on it keep their provenance. Retraining segmentation on a
 spatial split is a separate decision with its own cost, and it would invalidate
 the existing APLS numbers' comparability.
+
+---
+
+## 2026-09-10 — Why chip partitioning cannot reach zero leakage
+
+**Question.** The frontier bottoms out at 1.3% leaked validation nodes rather
+than zero. Is that a cost ceiling, or a structural limit?
+
+**Both, for different routes.**
+
+### Blocking alone: the chip graph does not disconnect
+
+Link two chips when an OSM way touches both. That relation is transitive — chip
+A shares a way with B, B shares a different way with C, so no partition
+separating A from C can avoid cutting a way. Over the 981 chips it yields **57
+components, the largest holding 900 chips (91.7%)**; the remaining 81 arrive in
+56 fragments of at most 7. The only chip partitions with zero shared ways are
+900 against 81, or worse. There is no usable zero-leak split that works by
+choosing which chips go where.
+
+### Buffering does reach zero, at a price that removes the point
+
+The residual leak at any buffer width is exactly the set of ways longer than it.
+2,576 of the 11,055 ways touch more than one chip; their span is median 389 m,
+p90 632 m, p99 1,558 m, max 4,284 m. At 1,000 m, 71 ways (2.8% of multi-chip
+ways) still bridge the gap, which is the measured 1.25% node leak.
+
+At 2560 m blocks, five draws:
+
+| buffer | train chips | train nodes | leaked val nodes |
+|---|---|---|---|
+| 0 | 767 | 60,613 | 0.0865 |
+| 500 m | 723 | 57,130 | 0.0377 |
+| 1,000 m | 589 | 46,519 | 0.0125 |
+| 1,500 m | 464 | 36,291 | 0.0081 |
+| 2,000 m | 344 | 26,861 | 0.0050 |
+| 3,000 m | 189 | 14,653 | **0.0000** |
+
+Zero is reachable at 3,000 m and costs 75% of the training chips. The curve is
+convex: the first halving of the leak costs 44 chips, the second 134, the third
+about 400. Validation is untouched throughout, because the margin is taken out
+of training by construction.
+
+### The route that reaches zero cheaply is the one not built
+
+A way-level holdout partitions the *ways* rather than the chips, so identity
+leakage is zero by construction and every chip stays in play. It needs masked
+supervision in the training loop, and it does nothing about neighbourhood
+correlation — an adjacent parallel street in the same subdivision carries the
+same class and is still visible. Already in the backlog; this measurement is the
+argument for pricing it before building the attribute model.
