@@ -21,8 +21,12 @@ adjacency rather than merely reducing it, and it pays for that in training
 samples.
 """
 
-from collections.abc import Callable, Sequence
+import hashlib
+import json
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -254,3 +258,168 @@ SPLIT_REGISTRY: dict[str, Callable[..., Splitter]] = {
     "blocked": lambda **kwargs: BlockedSplitter(**kwargs),
     "buffered": lambda **kwargs: BufferedBlockSplitter(**kwargs),
 }
+
+
+def digest(ids: Sequence[str]) -> str:
+    """A content hash over a list of sample ids, order included.
+
+    Order is part of the identity rather than noise: :func:`train.build_dataset`
+    draws crop windows per sample from one seeded stream, so two assignments
+    over the same ids in different orders are two different training runs.
+    """
+    return hashlib.sha256("\n".join(ids).encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenSplit:
+    """One assignment recorded so that it cannot drift.
+
+    A split is reproducible from its splitter, its seed and the list of samples
+    it was drawn over. The last of those lives in an untracked data directory,
+    so a chip added, removed or reordered silently produces a different split
+    under the same seed. Recording the assignment, and hashing what produced it,
+    is what turns "reproducible" into "the same".
+
+    Attributes:
+        name: The configuration's label, e.g. ``"buffered-2560+1000"``.
+        splitter: Key of :data:`SPLIT_REGISTRY` that drew it.
+        params: The splitter's own arguments, plus ``val_fraction`` and
+            ``seed``.
+        source: Where the samples came from: ``aoi_root``, ``resolution``,
+            ``n_chips``, and ``chips_sha256`` over the id list in the order the
+            source listed them.
+        assignment: The assignment itself.
+        digest: SHA-256 over the three sides, which
+            :func:`read_frozen` checks on the way in.
+    """
+
+    name: str
+    splitter: str
+    params: Mapping[str, float]
+    source: Mapping[str, str | float | int]
+    assignment: Assignment
+    digest: str
+
+
+def _assignment_digest(assignment: Assignment) -> str:
+    """Hash all three sides together, so moving one id between them shows up."""
+    return digest(
+        [
+            *assignment.train,
+            "--val--",
+            *assignment.val,
+            "--dropped--",
+            *assignment.dropped,
+        ]
+    )
+
+
+def freeze(
+    name: str,
+    splitter: str,
+    kwargs: Mapping[str, float],
+    placement: Placement,
+    val_fraction: float,
+    seed: int,
+    source: Mapping[str, str | float | int],
+) -> FrozenSplit:
+    """Draw a split and record everything needed to recognise it again.
+
+    Args:
+        name: Label for the configuration.
+        splitter: Key of :data:`SPLIT_REGISTRY`.
+        kwargs: The splitter's own arguments.
+        placement: Where the samples sit.
+        val_fraction: Share of samples to hold out.
+        seed: Seeds the draw.
+        source: Provenance of the sample list; see :class:`FrozenSplit`.
+
+    Returns:
+        The frozen split.
+    """
+    assignment = SPLIT_REGISTRY[splitter](**kwargs).split(placement, val_fraction, seed)
+    return FrozenSplit(
+        name=name,
+        splitter=splitter,
+        params=MappingProxyType(
+            dict(kwargs) | {"val_fraction": val_fraction, "seed": seed}
+        ),
+        source=MappingProxyType(dict(source)),
+        assignment=assignment,
+        digest=_assignment_digest(assignment),
+    )
+
+
+def write_frozen(path: Path | str, frozen: FrozenSplit) -> None:
+    """Write a frozen split as JSON."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(
+        json.dumps(
+            {
+                "name": frozen.name,
+                "splitter": frozen.splitter,
+                "params": dict(frozen.params),
+                "source": dict(frozen.source),
+                "digest": frozen.digest,
+                "train": list(frozen.assignment.train),
+                "val": list(frozen.assignment.val),
+                "dropped": list(frozen.assignment.dropped),
+            },
+            indent=2,
+        )
+    )
+
+
+def read_frozen(path: Path | str) -> FrozenSplit:
+    """Read a frozen split, refusing one whose ids no longer hash to its digest.
+
+    Args:
+        path: File written by :func:`write_frozen`.
+
+    Returns:
+        The frozen split.
+
+    Raises:
+        ValueError: If the recorded digest does not match the recorded ids,
+            which means the file was edited rather than redrawn.
+    """
+    raw = json.loads(Path(path).read_text())
+    assignment = Assignment(
+        train=tuple(raw["train"]),
+        val=tuple(raw["val"]),
+        dropped=tuple(raw["dropped"]),
+    )
+    found = _assignment_digest(assignment)
+    if found != raw["digest"]:
+        raise ValueError(
+            f"{path} records digest {raw['digest']} but its ids hash to {found}; "
+            "the file was edited by hand rather than redrawn"
+        )
+    return FrozenSplit(
+        name=raw["name"],
+        splitter=raw["splitter"],
+        params=MappingProxyType(raw["params"]),
+        source=MappingProxyType(raw["source"]),
+        assignment=assignment,
+        digest=raw["digest"],
+    )
+
+
+def rebuild(frozen: FrozenSplit, placement: Placement) -> Assignment:
+    """Redraw a frozen split from its recorded recipe.
+
+    What the freeze is checked against: equality with :attr:`FrozenSplit.assignment`
+    says the recipe still produces the file, and inequality says the sample list
+    moved underneath it.
+
+    Args:
+        frozen: The recorded split.
+        placement: Where the samples sit now.
+
+    Returns:
+        The assignment the recipe produces today.
+    """
+    params = dict(frozen.params)
+    val_fraction = float(params.pop("val_fraction"))
+    seed = int(params.pop("seed"))
+    return SPLIT_REGISTRY[frozen.splitter](**params).split(placement, val_fraction, seed)

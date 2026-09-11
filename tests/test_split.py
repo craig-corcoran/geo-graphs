@@ -1,10 +1,13 @@
 """Splitters: whether a held-out block stays whole, and whether a buffer buffers."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from pyproj import CRS
 
-from geo_graphs import split, tiles
+from geo_graphs import spacenet, split, tiles
 
 UTM = CRS.from_epsg(32611)
 
@@ -210,3 +213,104 @@ def test_a_block_smaller_than_the_spacing_degenerates_to_per_sample():
     assignment = split.SPLIT_REGISTRY["blocked"](block_m=1.0).split(placement, 0.2, 0)
 
     assert len(assignment.val) == round(len(placement.ids) * 0.2)
+
+
+FROZEN = Path("splits/buffered_2560_1000_seed0.json")
+needs_frozen = pytest.mark.skipif(
+    not FROZEN.is_file(), reason="the frozen split has not been drawn"
+)
+needs_vegas = pytest.mark.skipif(
+    not Path("data/AOI_2_Vegas").is_dir(), reason="Vegas AOI not extracted"
+)
+
+
+def frozen_of(placement: split.Placement, tmp_path: Path) -> Path:
+    """Freeze a blocked split over a synthetic lattice and write it out."""
+    path = tmp_path / "frozen.json"
+    split.write_frozen(
+        path,
+        split.freeze(
+            name="blocked-1280",
+            splitter="blocked",
+            kwargs={"block_m": 1280.0},
+            placement=placement,
+            val_fraction=0.2,
+            seed=0,
+            source={"aoi_root": "synthetic", "n_chips": len(placement.ids)},
+        ),
+    )
+    return path
+
+
+def test_a_frozen_split_round_trips(tmp_path):
+    placement = lattice()
+    path = frozen_of(placement, tmp_path)
+    frozen = split.read_frozen(path)
+
+    assert frozen.name == "blocked-1280"
+    assert frozen.splitter == "blocked"
+    assert frozen.params["block_m"] == 1280.0
+    assert frozen.params["seed"] == 0
+    assert set(frozen.assignment.train) | set(frozen.assignment.val) == set(placement.ids)
+
+
+def test_a_frozen_split_is_reproduced_by_its_own_recipe(tmp_path):
+    """What freezing is for: the recipe and the record have to still agree."""
+    placement = lattice()
+    frozen = split.read_frozen(frozen_of(placement, tmp_path))
+
+    assert split.rebuild(frozen, placement) == frozen.assignment
+
+
+def test_rebuilding_over_a_changed_sample_list_disagrees(tmp_path):
+    """One chip more and the same seed draws a different split; that is the point."""
+    frozen = split.read_frozen(frozen_of(lattice(), tmp_path))
+
+    assert split.rebuild(frozen, lattice(rows=29)) != frozen.assignment
+
+
+def test_a_hand_edited_frozen_split_is_refused(tmp_path):
+    path = frozen_of(lattice(), tmp_path)
+    raw = json.loads(path.read_text())
+    raw["val"].append(raw["train"].pop())
+    path.write_text(json.dumps(raw))
+
+    with pytest.raises(ValueError, match="edited by hand"):
+        split.read_frozen(path)
+
+
+def test_the_digest_covers_which_side_an_id_is_on(tmp_path):
+    """A digest over the union would miss an id moving between sides."""
+    a = split.Assignment(train=("a", "b"), val=("c",), dropped=())
+    b = split.Assignment(train=("a",), val=("b", "c"), dropped=())
+    assert split._assignment_digest(a) != split._assignment_digest(b)
+
+
+def test_digest_depends_on_order():
+    assert split.digest(["a", "b"]) != split.digest(["b", "a"])
+
+
+@needs_frozen
+@needs_vegas
+def test_the_committed_split_still_matches_the_data_on_disk():
+    """The guard the freeze exists for.
+
+    Failing here means the chip list moved: a chip added, removed or reordered
+    under `data/AOI_2_Vegas`. The frozen ids stay authoritative; this test says
+    the recipe no longer reproduces them.
+    """
+    frozen = split.read_frozen(FROZEN)
+    chips = spacenet.find_chips(Path(str(frozen.source["aoi_root"])))
+    ids = [c.image_id for c in chips]
+
+    assert split.digest(ids) == frozen.source["chips_sha256"]
+    assert len(ids) == frozen.source["n_chips"]
+
+    placement = split.placement_from_tiles(
+        ids,
+        [
+            spacenet.chip_tile(c.image_path, float(frozen.source["resolution"]))
+            for c in chips
+        ],
+    )
+    assert split.rebuild(frozen, placement) == frozen.assignment

@@ -86,6 +86,9 @@ class TrainConfig:
         split_block_m: Block side length the spatial splitters used, in metres.
         split_buffer_m: Training margin the buffered splitter dropped, in
             metres.
+        split_digest: Content hash of a frozen split's ids, or empty when the
+            split was drawn rather than read. Two runs whose ids differ cannot
+            be compared, and this is what says so without diffing the lists.
     """
 
     train_ids: tuple[str, ...] = ("tile_0", "tile_2")
@@ -112,6 +115,7 @@ class TrainConfig:
     split: str = "random"
     split_block_m: float = 1280.0
     split_buffer_m: float = 500.0
+    split_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1104,6 +1108,15 @@ def main() -> None:
         default=defaults.split_buffer_m,
         help="training margin the buffered splitter drops, in metres",
     )
+    parser.add_argument(
+        "--split-file",
+        type=Path,
+        help=(
+            "read a frozen split instead of drawing one; overrides --split and "
+            "its parameters, and is how several runs are made to agree on the "
+            "same ids rather than each re-deriving them"
+        ),
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--out", type=Path, help="write metrics as JSON here")
     args = parser.parse_args()
@@ -1111,16 +1124,29 @@ def main() -> None:
     source, source_key = build_source(
         args.aoi_root, args.source, args.resolution, lidar=args.lidar
     )
-    assignment = assign_split(
-        source,
-        args.split,
-        args.val_fraction,
-        args.seed,
-        args.split_block_m,
-        args.split_buffer_m,
-    )
+    if args.split_file:
+        frozen = split.read_frozen(args.split_file)
+        assignment = frozen.assignment
+        unknown = (set(assignment.train) | set(assignment.val)) - set(source.ids())
+        if unknown:
+            raise ValueError(
+                f"{args.split_file} names {len(unknown)} samples this source does "
+                f"not have, e.g. {sorted(unknown)[:3]}; it was frozen over "
+                f"{frozen.source.get('aoi_root')}"
+            )
+        split_name, split_digest = frozen.name, frozen.digest
+    else:
+        assignment = assign_split(
+            source,
+            args.split,
+            args.val_fraction,
+            args.seed,
+            args.split_block_m,
+            args.split_buffer_m,
+        )
+        split_name, split_digest = args.split, ""
     logger.info(
-        f"{source_key}: {args.split} split, {len(assignment.train)} train tiles, "
+        f"{source_key}: {split_name} split, {len(assignment.train)} train tiles, "
         f"{len(assignment.val)} val tiles, {len(assignment.dropped)} dropped"
     )
 
@@ -1144,9 +1170,10 @@ def main() -> None:
         cldice_weight=args.cldice_weight,
         fusion=args.fusion,
         coverage=data.CoverageSampler(mode=args.coverage),
-        split=args.split,
+        split=split_name,
         split_block_m=args.split_block_m,
         split_buffer_m=args.split_buffer_m,
+        split_digest=split_digest,
     )
     result = train(config, source=source, checkpoint=args.checkpoint)
 
