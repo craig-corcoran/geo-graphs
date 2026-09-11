@@ -148,14 +148,14 @@ proposing new architectural work.
   and a residual neighbourhood correlation that blocking does address. Worth
   pricing before the attribute model is built.
 
-- **Statistical helpers in `scripts/` have no durable tests.** No test file
-  mirrors a script anywhere in the repo, so `attr_resolvability`'s macro-F1,
-  chip bootstrap and power calculation were verified once against
-  `scipy.stats.norm.ppf`, a per-class loop and a jackknife, and that check is
-  not checked in. Adding `tests/test_attr_resolvability.py` needs `scripts/` on
-  the test path, which is a repo-wide convention change rather than a local
-  one — hence a decision to make rather than a fix to apply. It pairs naturally
-  with widening `SRC` so `make lint` covers `scripts/`, tracked below.
+- **The attribute-inference model is designed and not built.** Both Tier 0
+  checks passed: the comparison is resolvable (3.6 macro-F1 points on the frozen
+  split under the way regime) and the signal exists (linear probe 0.3820 against
+  a 0.1165 majority baseline). `plans/gnn_attribute_inference.md` carries the
+  design, including the three decisions that change what the project can claim —
+  line graph over way pieces, inductive with two disjoint graphs, and a per-piece
+  MLP arm without which a GNN win conflates pooling with propagation. Arms A and
+  B exist in `scripts/attr_probe.py`; C and D do not.
 
 - **OSM now comes from a pinned local extract, and Overpass agreement is
   unvalidated.** `data/nevada-latest.osm.pbf` (MD5
