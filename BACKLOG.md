@@ -124,6 +124,26 @@ proposing new architectural work.
   / 196 val. Paris, Shanghai and Khartoum exist only as 10-chip samples and are
   separate downloads.
 
+- **The train/val split leaks whole roads, and attribute inference cannot
+  tolerate it.** 876 of the 2,453 OSM `drive` ways touching a val chip also
+  touch a train chip (35.7%), because the split was drawn over chips at random
+  and SpaceNet chips are adjacent tiles. For segmentation this leaks texture
+  across the boundary. For a task whose label is a property of the way and
+  constant along it, it leaks the answer outright. The fix is a spatially
+  blocked split — partition by a coarse grid over chip centroids, or hold out
+  OSM ways rather than chips — and it invalidates the existing `train_ids` /
+  `val_ids` for that task. Measured 2026-09-10 by
+  `scripts/attr_resolvability.py`; see `EXPERIMENT_LOG.md` the same day.
+
+- **Statistical helpers in `scripts/` have no durable tests.** No test file
+  mirrors a script anywhere in the repo, so `attr_resolvability`'s macro-F1,
+  chip bootstrap and power calculation were verified once against
+  `scipy.stats.norm.ppf`, a per-class loop and a jackknife, and that check is
+  not checked in. Adding `tests/test_attr_resolvability.py` needs `scripts/` on
+  the test path, which is a repo-wide convention change rather than a local
+  one — hence a decision to make rather than a fix to apply. It pairs naturally
+  with widening `SRC` so `make lint` covers `scripts/`, tracked below.
+
 - **OSM now comes from a pinned local extract, and Overpass agreement is
   unvalidated.** `data/nevada-latest.osm.pbf` (MD5
   `5c750d8e270510e12dce81711c201491`) is read through `WAY_SOURCE_REGISTRY`.

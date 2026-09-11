@@ -1360,3 +1360,110 @@ floor.
 Six proposal chips zero out at `max_snap` 5 (img1638 has 6 truth control points
 and 3 scored pairs, so losing 2 landings takes a direction to 0 and the harmonic
 mean with it). The median, 0.6978, is the more robust read at that radius.
+
+---
+
+## 2026-09-10 — What a road-class ablation could resolve, before training one
+
+**Change under test.** Nothing was trained. The attribute-inference project's
+first question is the one gap closing failed: can a two-arm comparison on this
+data separate its arms at all? `scripts/attr_resolvability.py` answers it from
+counting and simulation, at a cost of 44 seconds.
+
+**What was measured.** Nodes placed along the OSM `drive` network in all 981
+chips (785 train, 196 val), labelled with the way's `highway` class folded into
+six: motorway, primary, secondary, tertiary, residential, unclassified. Links
+join their parent. A model at a stated per-unit accuracy is simulated — correct
+with probability `a`, otherwise predicting a class drawn from the label prior
+excluding the true one — its macro-F1 is bootstrapped over chips, and the
+smallest difference a comparison could call at 80% power and alpha 0.05 follows
+from the standard error. Node spacing (5, 10, 20, 40 m), accuracy (0.5, 0.7,
+0.9), the error-correlation regime and the between-arm correlation are swept.
+
+The statistical core was checked against independent implementations before the
+numbers were read: `_z` against `scipy.stats.norm.ppf` (max error 2.7e-15),
+`macro_f1` against a per-class loop (5.6e-17), the chip bootstrap against a
+jackknife (ratio 0.985 at 196 chips, 0.992 at 785), and identical chips against
+the exact answer of zero. The headline reproduces to within 3% at a second seed.
+
+### Node spacing does not buy statistical power
+
+On the val split at accuracy 0.7, node regime:
+
+| spacing | nodes | sem(macro-F1) |
+|---|---|---|
+| 5 m | 56,901 | 0.0120 |
+| 10 m | 28,552 | 0.0121 |
+| 20 m | 14,487 | 0.0126 |
+| 40 m | 7,632 | 0.0132 |
+
+A 7.5-fold change in node count moves the noise floor by 10%. The reason is that
+the bootstrap resamples **chips**, and the chip count is fixed at 196: the
+variance is dominated by which chips were drawn and how their class mix differs,
+not by how densely each was sampled. This holds even in the regime where every
+node's error is drawn independently, which is the most favourable case density
+could have had.
+
+So the spacing decision is free on statistical grounds and should be made on
+compute: **20 m stands**, and 10 m would quadruple the node count for a 4%
+narrower interval.
+
+### The correlation regime matters 2.3x more than the spacing
+
+Errors drawn per node treat a 400 m street as 20 observations; drawn per OSM way
+they treat it as one. At val, 20 m, accuracy 0.7, sem is 0.0126 per node, 0.0185
+per way, 0.0289 per same-class component. The way and component unit counts are
+constant in spacing by construction — 2,453 ways and 791 components on val, at
+every density — which is the mechanism behind the table above.
+
+### What the comparison would need to show
+
+Minimum detectable macro-F1 difference at 20 m spacing, accuracy 0.7:
+
+| scored on | regime | unpaired | rho=0.8 | rho=0.9 |
+|---|---|---|---|---|
+| val, 196 chips | node | 0.0498 | 0.0223 | 0.0158 |
+| val, 196 chips | way | 0.0731 | 0.0327 | 0.0231 |
+| val, 196 chips | component | 0.1144 | 0.0512 | 0.0362 |
+| train-sized, 785 chips | node | 0.0239 | 0.0107 | 0.0076 |
+| train-sized, 785 chips | way | 0.0358 | 0.0160 | 0.0113 |
+| train-sized, 785 chips | component | 0.0572 | 0.0256 | 0.0181 |
+
+`rho` is the between-arm correlation, which is a property of two models that do
+not exist yet, so it is tabulated rather than measured. Two seeds of one
+architecture sit near 0.9; two unrelated models near 0.
+
+Read on the val split as it stands, an ablation needs **2 to 5 macro-F1 points**
+under strong pairing, and 5 to 11 unpaired. Read on 785 chips it needs 1 to 3.
+That is the whole design constraint, and it is about the size of the evaluation
+set, not about the node sampling.
+
+### Three preconditions cleared, one problem found
+
+**The metric is not trivially satisfiable.** Residential is 54.8% of val nodes,
+so always predicting it scores 0.548 accuracy and **0.118 macro-F1**. Macro-F1
+is doing the work accuracy would not.
+
+**The vocabulary covers the data.** Zero nodes fell outside the six classes: the
+`drive` filter over Las Vegas admits nothing else. No trunk roads exist here, so
+that class is defined in the map and absent from the vocabulary; another AOI
+would need it back.
+
+**The rare class is thin but not empty.** Unclassified is 2.7–3.5% of nodes: 505
+nodes on 109 ways and 46 components in val, 1,669 nodes on 361 ways and 193
+components in train. Under the component regime the rarest class carries about
+42 independent units on val, and one sixth of the macro average rests on them.
+
+**876 OSM ways reach both splits** — 35.7% of val's 2,453 ways also appear in a
+train chip. The existing split was drawn over chips at random, and SpaceNet
+chips are adjacent tiles, so a street cut by the split is seen from both sides.
+For segmentation this leaks texture. For attribute inference the label is a
+*property of the way and constant along it*, so it leaks the answer: a model
+that memorises "way 12345 is tertiary" collects it again at evaluation. This is
+the one finding that changes the project's design rather than confirming a
+default.
+
+**Next.** The remaining Tier 0 checks are untouched and neither is answered by
+counting: whether the class is predictable from imagery at all, and whether a
+topology-only baseline already gets it. This run says only that if a difference
+exists and exceeds a few macro-F1 points, the data can show it.
