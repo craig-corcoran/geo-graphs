@@ -124,16 +124,28 @@ proposing new architectural work.
   / 196 val. Paris, Shanghai and Khartoum exist only as 10-chip samples and are
   separate downloads.
 
-- **The train/val split leaks whole roads, and attribute inference cannot
-  tolerate it.** 876 of the 2,453 OSM `drive` ways touching a val chip also
-  touch a train chip (35.7%), because the split was drawn over chips at random
-  and SpaceNet chips are adjacent tiles. For segmentation this leaks texture
-  across the boundary. For a task whose label is a property of the way and
-  constant along it, it leaks the answer outright. The fix is a spatially
-  blocked split — partition by a coarse grid over chip centroids, or hold out
-  OSM ways rather than chips — and it invalidates the existing `train_ids` /
-  `val_ids` for that task. Measured 2026-09-10 by
-  `scripts/attr_resolvability.py`; see `EXPERIMENT_LOG.md` the same day.
+- **The shipped split leaks whole roads; the replacement exists and is not the
+  default.** 45.4% of validation *nodes* lie on an OSM way that also touches a
+  training chip (876 of 2,453 ways, 35.7% — the way count understates it
+  because shared ways are the long ones). `split.SPLIT_REGISTRY` now offers
+  `blocked` and `buffered`, and `scripts/split_sweep.py` reports the frontier:
+  `buffered-2560+500` takes leakage to 3.8% for 8% of the training chips,
+  `buffered-2560+1000` to 1.3% for 25%. Two things are still open. First, **which
+  of those two to freeze**, and at which seed — at 2560 m the AOI is 35 blocks,
+  so the draw moves the validation class mix. Second, **whether to retrain
+  segmentation on it**: `train.assign_split` defaults to `random` so
+  `vegas_best.pt` keeps its provenance, and switching would make the existing
+  APLS numbers incomparable. Blocking costs motorway coverage specifically —
+  6.0% of the AOI, 3.1% of a blocked validation set. See `EXPERIMENT_LOG.md`
+  2026-09-10.
+
+- **Way-level holdout is unexplored and would dominate on power.** Every
+  candidate measured partitions *chips*, which costs either training data (the
+  buffer) or honesty (the leak). Supervising on training ways and scoring on
+  held-out ways across all 981 chips would take identity leakage to zero while
+  keeping every chip, at the cost of masked supervision in the training loop
+  and a residual neighbourhood correlation that blocking does address. Worth
+  pricing before the attribute model is built.
 
 - **Statistical helpers in `scripts/` have no durable tests.** No test file
   mirrors a script anywhere in the repo, so `attr_resolvability`'s macro-F1,

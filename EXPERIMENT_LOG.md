@@ -1467,3 +1467,96 @@ default.
 counting: whether the class is predictable from imagery at all, and whether a
 topology-only baseline already gets it. This run says only that if a difference
 exists and exceeds a few macro-F1 points, the data can show it.
+
+---
+
+## 2026-09-10 — Splitting by ground position, and the bill for it
+
+**Change under test.** `geo_graphs/split.py` and `scripts/split_sweep.py`.
+Thirteen candidate train/val splits over the 981 Las Vegas chips, each drawn at
+five seeds, scored on leakage, adjacency, class mix and the validation side's
+macro-F1 noise floor. Nothing trained.
+
+**Cross-check first.** The sweep's `random` draw at seed 0 reproduces the ids
+and order of the shipped split exactly, and reports 876 shared ways of 2,453 —
+the same figure `attr_resolvability` reached by different code earlier today.
+
+### The random split is worse than the way count said
+
+45.4% of validation nodes lie on an OSM way that also touches a training chip
+(41.6–48.8% across five draws), against 35.7% of *ways*. Shared ways are the
+long ones, so counting ways understates the share of the evaluation set whose
+answer is already visible. By length the figure is the same 45%.
+
+### Blocking helps and does not fix it
+
+Mean over five draws, at 20 m node spacing:
+
+| candidate | train | leaked val nodes | sem(macro-F1) | max class drift | rare-class ways |
+|---|---|---|---|---|---|
+| random | 785 | 0.4542 | 0.0187 | 0.0139 | 97 |
+| blocked-640 | 784 | 0.3321 | 0.0200 | 0.0321 | 79 |
+| blocked-1280 | 779 | 0.1635 | 0.0196 | 0.0333 | 87 |
+| blocked-1920 | 779 | 0.1442 | 0.0221 | 0.0544 | 57 |
+| blocked-2560 | 767 | 0.0865 | 0.0211 | 0.0391 | 73 |
+| buffered-2560+500 | 723 | 0.0377 | 0.0217 | 0.0391 | 73 |
+| buffered-2560+1000 | 589 | 0.0125 | 0.0212 | 0.0391 | 73 |
+| buffered-640+1000 | 185 | 0.0109 | 0.0201 | 0.0321 | 79 |
+
+Those eight are the Pareto frontier on leakage against training chips; the other
+five candidates are dominated. Blocking alone bottoms out around 9% leakage
+because roads cross block boundaries, and 10.9–20.7% of validation chips still
+share a border with a training chip at 640–1920 m. Only a buffer takes the
+touching fraction to zero.
+
+**Larger blocks buffer more cheaply.** A validation set of many small squares has
+far more perimeter than one of a few large squares, so the same 1000 m margin
+costs 599 training chips at 640 m blocks and 178 at 2560 m. That is the whole
+reason `buffered-2560+1000` sits on the frontier and `buffered-1280+1000` does
+not.
+
+**Block size is not monotonic.** 1920 m is worse than 2560 m on noise (0.0221 vs
+0.0211), class drift (0.0544 vs 0.0391) and rare-class ways (57 vs 73), despite
+cutting the AOI into 62 blocks rather than 35. The AOI is 14.1 by 15.3 km, so
+how a block grid lands on it matters as much as how fine it is.
+
+### What blocking costs: motorway
+
+Validation class share, mean over five draws:
+
+| | motorway | primary | secondary | tertiary | residential | unclassified |
+|---|---|---|---|---|---|---|
+| whole AOI | 0.0604 | 0.1444 | 0.1094 | 0.1116 | 0.5458 | 0.0284 |
+| random | 0.0548 | 0.1440 | 0.1174 | 0.1059 | 0.5474 | 0.0304 |
+| blocked-2560 | 0.0311 | 0.1494 | 0.1223 | 0.1083 | 0.5521 | 0.0368 |
+
+Almost all the drift is motorway: 6.0% of the AOI, 3.1% of a blocked validation
+set. Motorways are few, long and linear, so a block either contains one or does
+not, and the class that already had the fewest independent units loses a third
+of them. Rare-class ways fall from 97 to 73.
+
+### Evaluation noise barely moves
+
+sem(macro-F1) under the way regime goes from 0.0187 (random) to 0.0212
+(`buffered-2560+1000`), a 13% rise; the minimum detectable difference at rho 0.9
+goes from 0.0234 to 0.0265. Blocking costs almost nothing in power, because the
+validation *chip count* barely changes and that is what the bootstrap resamples.
+The cost is training chips and motorway coverage, not error bars.
+
+### The frontier, and the two contenders
+
+`buffered-2560+500` cuts leakage 12-fold, from 0.454 to 0.038, for 62 training
+chips (8%). `buffered-2560+1000` cuts it 36-fold, to 0.013, for 196 chips (25%).
+Beyond that the trade collapses: `buffered-640+1000` buys another 0.0016 of
+leakage for a further 404 chips.
+
+Which of the two is right depends on whether 4% memorised validation is
+tolerable, and that is a judgement about the claim being made, not about the
+data. Both are on the frontier. The seed matters too and has to be recorded: at
+2560 m the AOI is 35 blocks and 7 are held out, so a single draw's class mix
+ranges over 0.026–0.062 in max drift.
+
+**Not done.** `train.assign_split` defaults to `random`, so `vegas_best.pt` and
+every number measured on it keep their provenance. Retraining segmentation on a
+spatial split is a separate decision with its own cost, and it would invalidate
+the existing APLS numbers' comparability.
