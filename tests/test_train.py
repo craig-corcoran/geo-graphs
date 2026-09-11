@@ -552,6 +552,26 @@ def placed_source(n: int = 6, pitch: float = 2000.0) -> _FixedSource:
     )
 
 
+def test_load_checkpoint_places_the_model_on_the_requested_device(tmp_path):
+    """The device argument has to move the module, not only map its storage.
+
+    A module built on the CPU and left there fails inside the first convolution
+    when it meets a tensor on an accelerator, which reads as a dtype bug rather
+    than a placement one.
+    """
+    path = tmp_path / "model.pt"
+    model = train.UNet(in_channels=3, widths=(4, 8))
+    torch.save({"widths": [4, 8], "state_dict": model.state_dict()}, path)
+
+    loaded = train.load_checkpoint(path, device="cpu")
+    assert not loaded.training
+    assert all(p.device.type == "cpu" for p in loaded.parameters())
+
+    if torch.backends.mps.is_available():
+        on_mps = train.load_checkpoint(path, device="mps")
+        assert all(p.device.type == "mps" for p in on_mps.parameters())
+
+
 def test_assign_split_dispatches_through_the_registry():
     source = placed_source()
     assignment = train.assign_split(

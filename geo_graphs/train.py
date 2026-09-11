@@ -692,10 +692,14 @@ def load_checkpoint(path: Path, device: str = "cpu") -> UNet:
 
     Args:
         path: Checkpoint written by :func:`train`.
-        device: Device string to map storage onto.
+        device: Device to map storage onto and place the model on. Mapping
+            storage alone is not enough: the module is constructed on the CPU
+            and would stay there, so a caller that then feeds it a tensor on an
+            accelerator gets a dtype-and-device mismatch out of the first
+            convolution rather than an answer.
 
     Returns:
-        The model in eval mode.
+        The model on ``device``, in eval mode.
     """
     payload = torch.load(path, map_location=device, weights_only=True)
     # A checkpoint written before fusion existed carries neither key, and an
@@ -709,8 +713,7 @@ def load_checkpoint(path: Path, device: str = "cpu") -> UNet:
         fusion=FUSION_REGISTRY[fusion_key]() if fusion_key else None,
     )
     model.load_state_dict(payload["state_dict"])
-    model.eval()
-    return model
+    return model.to(device).eval()
 
 
 def predict_tile_logits(

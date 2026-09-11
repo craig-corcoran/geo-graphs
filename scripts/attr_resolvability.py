@@ -136,6 +136,9 @@ class ChipNodes:
         spacing: Node spacing in metres the nodes were placed at.
         klass: ``(N,)`` index into :data:`CLASSES` per node.
         way: ``(N,)`` OSM way id per node, as an index into a run-wide table.
+        xy: ``(N, 2)`` node position in tile pixel coordinates. Nodes are placed
+            at even fractions along their piece, so this is where a model would
+            read the imagery.
         node_length: ``(N,)`` metres of road each node stands for, which is its
             piece's length divided by the nodes placed on it. Node counts are
             proportional to length only up to the rounding that gives a short
@@ -157,6 +160,7 @@ class ChipNodes:
     spacing: float
     klass: np.ndarray
     way: np.ndarray
+    xy: np.ndarray
     node_length: np.ndarray
     component: np.ndarray
     n_other: int
@@ -354,6 +358,20 @@ def _same_class_components(
     return np.array([find(i) for i in range(len(ways))], dtype=np.int64)
 
 
+def _along(pts: np.ndarray, count: int) -> np.ndarray:
+    """``count`` points spread evenly along a polyline, by arc length.
+
+    Placed at the midpoints of ``count`` equal spans rather than at the ends, so
+    a piece never puts a node exactly on the junction it was cut at, where the
+    imagery is a crossing rather than a road.
+    """
+    steps = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(pts, axis=0).T))])
+    want = (np.arange(count) + 0.5) * steps[-1] / count
+    return np.column_stack(
+        [np.interp(want, steps, pts[:, 0]), np.interp(want, steps, pts[:, 1])]
+    )
+
+
 def chip_nodes(
     ways: Sequence[osm.TaggedWay],
     chip_id: str,
@@ -423,6 +441,11 @@ def chip_nodes(
         spacing=spacing,
         klass=np.repeat(klass, counts),
         way=np.repeat(way_ids, counts),
+        xy=np.concatenate(
+            [_along(w.pts, int(n)) for w, n in zip(kept_ways, counts, strict=True)]
+        )
+        if keep
+        else np.zeros((0, 2)),
         node_length=np.repeat(lengths[keep] / counts, counts) if keep else np.zeros(0),
         component=np.repeat(component_ids, counts),
         n_other=n_other,

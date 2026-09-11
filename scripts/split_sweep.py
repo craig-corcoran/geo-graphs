@@ -433,6 +433,7 @@ def main() -> None:
                     spacing=n.spacing,
                     klass=n.klass,
                     way=n.way,
+                    xy=n.xy,
                     node_length=n.node_length,
                     component=n.component,
                     n_other=n.n_other,

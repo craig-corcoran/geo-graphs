@@ -24,6 +24,7 @@ SNAP_ARGS ?=
 RESOLVE_ARGS ?=
 SPLIT_ARGS ?=
 FREEZE_ARGS ?=
+PROBE_ARGS ?=
 CROSSCHECK_ARGS ?=
 SHOWCASE_ARGS ?=
 EXPLAINER_ARGS ?=
@@ -43,7 +44,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep attr-resolvability split-sweep freeze-split osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep attr-resolvability split-sweep freeze-split attr-probe osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -118,6 +119,9 @@ split-sweep:  ## Price every candidate train/val split on leakage, adjacency, cl
 
 freeze-split:  ## Draw one split and record it with a content hash (writes splits/)
 	$(UV) run python $(SCRIPTS)/freeze_split.py $(FREEZE_ARGS)
+
+attr-probe:  ## Ask whether road class is readable from the frozen decoder's features at all (no training of the decoder; writes outputs/attr_probe.json)
+	$(UV) run python $(SCRIPTS)/attr_probe.py $(PROBE_ARGS)
 
 osm-crosscheck:  ## Cross-check SpaceNet labels and stub purity against OSM (reads OSM_EXTRACT; writes outputs/osm_crosscheck.json)
 	$(UV) run python $(SCRIPTS)/osm_crosscheck.py \
