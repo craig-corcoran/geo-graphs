@@ -130,14 +130,15 @@ proposing new architectural work.
   because shared ways are the long ones). `split.SPLIT_REGISTRY` now offers
   `blocked` and `buffered`, and `scripts/split_sweep.py` reports the frontier:
   `buffered-2560+500` takes leakage to 3.8% for 8% of the training chips,
-  `buffered-2560+1000` to 1.3% for 25%. Two things are still open. First, **which
-  of those two to freeze**, and at which seed — at 2560 m the AOI is 35 blocks,
-  so the draw moves the validation class mix. Second, **whether to retrain
-  segmentation on it**: `train.assign_split` defaults to `random` so
-  `vegas_best.pt` keeps its provenance, and switching would make the existing
-  APLS numbers incomparable. Blocking costs motorway coverage specifically —
-  6.0% of the AOI, 3.1% of a blocked validation set. See `EXPERIMENT_LOG.md`
-  2026-09-10.
+  `buffered-2560+1000` to 1.3% for 25%. ~~Which of those two to freeze, and at
+  which seed.~~ Settled: `buffered-2560+1000` at seed 0, committed as
+  `splits/buffered_2560_1000_seed0.json`, leaking 0.67% of validation nodes.
+  Still open: **whether to retrain segmentation on it**. `train.assign_split`
+  defaults to `random` so `vegas_best.pt` keeps its provenance, and switching
+  would make the existing APLS numbers incomparable; `train.main --split-file`
+  is the path when that call is made. Blocking costs motorway coverage
+  specifically — 6.0% of the AOI, 3.2% of the frozen validation set, 74 ways
+  carrying one sixth of the macro average. See `EXPERIMENT_LOG.md` 2026-09-10.
 
 - **Way-level holdout is unexplored and would dominate on power.** Every
   candidate measured partitions *chips*, which costs either training data (the

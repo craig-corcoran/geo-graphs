@@ -1611,3 +1611,62 @@ supervision in the training loop, and it does nothing about neighbourhood
 correlation — an adjacent parallel street in the same subdivision carries the
 same class and is still visible. Already in the backlog; this measurement is the
 argument for pricing it before building the attribute model.
+
+---
+
+## 2026-09-10 — The split the attribute project is frozen on
+
+**Decision.** `buffered-2560+1000` at seed 0, committed as
+`splits/buffered_2560_1000_seed0.json` with digest `66b989f5…`.
+
+**Seed 0 is a good draw.** 615 train chips, 226 val, 140 dropped of 981, against
+the five-draw means of 589 / 214 / 178. Only **4 OSM ways of the validation
+side's 2,371 also touch a training chip**, so 0.67% of validation nodes carry a
+memorisable label, half the 1.25% this configuration averages. By length the
+figure is 0.66%. No validation chip has a training chip within 1,002 m; median
+gap 1,589 m.
+
+| | chips | nodes at 20 m | OSM ways |
+|---|---|---|---|
+| train | 615 | 49,339 | 7,207 |
+| val | 226 | 15,944 | 2,371 |
+| dropped | 140 | — | — |
+
+**Noise floor on this exact split**, at 20 m spacing and 0.7 per-unit accuracy:
+
+| regime | sem | mdd unpaired | mdd rho=0.8 | mdd rho=0.9 |
+|---|---|---|---|---|
+| node | 0.0145 | 0.0576 | 0.0258 | 0.0182 |
+| way | 0.0202 | 0.0801 | 0.0358 | 0.0253 |
+| component | 0.0285 | 0.1130 | 0.0505 | 0.0357 |
+
+An ablation on this split needs 1.8 to 3.6 macro-F1 points under strong pairing.
+At 0.67% leaked, no memorisation advantage can move macro-F1 by more than about
+0.7 points, so the comparison cannot be manufactured by the leak. That is the
+property the split was chosen for.
+
+**Class mix, the cost paid.**
+
+| | motorway | primary | secondary | tertiary | residential | unclassified |
+|---|---|---|---|---|---|---|
+| whole AOI | 0.0604 | 0.1444 | 0.1094 | 0.1116 | 0.5458 | 0.0284 |
+| this split's val | 0.0317 | 0.1769 | 0.1109 | 0.1049 | 0.5370 | 0.0386 |
+
+Motorway is halved, as every blocked split halves it, and is the rarest
+validation class at 506 nodes on 74 ways. Primary is over-represented by 3.3
+points, which is this draw rather than the configuration. One sixth of the macro
+average rests on 74 motorway ways.
+
+### Why the file is committed rather than re-derived
+
+The split is reproducible from splitter, seed and chip list, and the chip list
+lives in an untracked data directory. A chip added or removed redraws it under
+the same seed, silently. `split.freeze` records the assignment under a SHA-256
+over its three sides, plus one over the chip list that produced it;
+`read_frozen` refuses a file whose ids no longer hash to its digest, and
+`rebuild` redraws from the recipe so record and recipe can be compared. A test
+guarded on the AOI being present does that comparison, and passes today.
+
+**Segmentation is untouched.** `train.assign_split` still defaults to `random`,
+so `vegas_best.pt` and every APLS number measured on it keep their provenance.
+`train.main --split-file` is the path for a run that wants this split instead.
