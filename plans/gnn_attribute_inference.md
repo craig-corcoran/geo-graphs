@@ -185,5 +185,6 @@ the city contains.
 
 **One AOI.** Las Vegas is a grid city with unusually regular block structure,
 which is exactly the structure a junction-propagating model exploits. A result
-here says little about Paris or Khartoum, both of which exist as 10-chip samples
-only.
+here says little about Paris or Khartoum, which are local only as 10-chip
+samples. Their full AOIs are on the same public bucket that Vegas came from, so
+this is a download that has not been made rather than data that does not exist.

@@ -121,8 +121,8 @@ proposing new architectural work.
   `spacenet.SpaceNetTileSource`, reprojected to UTM and noded. Ten chips per AOI.
 - ~~**Only the sample is downloaded.**~~ Done. The full 24 GB Vegas AOI is
   extracted at `data/AOI_2_Vegas`: 989 chips, 981 with labels, split 785 train
-  / 196 val. Paris, Shanghai and Khartoum exist only as 10-chip samples and are
-  separate downloads.
+  / 196 val. Only the 10-chip sampler is local for Paris, Shanghai and Khartoum;
+  their full AOIs are separate downloads from the same public bucket.
 
 - **The shipped split leaks whole roads; the replacement exists and is not the
   default.** 45.4% of validation *nodes* lie on an OSM way that also touches a

@@ -85,7 +85,8 @@ were established by measurement rather than chosen.
   chips were spent selecting the mask threshold; the remaining 155 are the
   reporting holdout, minus `img1612`, whose ceiling is 0.0.
 - `data/AOI_2_Vegas` holds 989 chips, 981 with labels. Chips are roughly
-  396x324 px. Paris, Shanghai and Khartoum exist only as 10-chip samples.
+  396x324 px. Only the 10-chip sampler is extracted for Paris, Shanghai and
+  Khartoum; their full AOIs are separate downloads from the same bucket.
 - `model.py` carries the Protocol-plus-registry pattern this work should follow:
   `Fusion`, `EarlyFusion`, and the definition-site pin `_: type[Fusion] =
   EarlyFusion`.
