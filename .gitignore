@@ -13,3 +13,6 @@ wheels/
 cache/
 data/
 outputs/
+
+# macOS
+.DS_Store
