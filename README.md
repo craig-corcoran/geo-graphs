@@ -49,11 +49,14 @@ Both are readable at **https://craig-corcoran.github.io/geo-graphs/**.
 |---|---|
 | [Estimating Transportation Networks](https://craig-corcoran.github.io/geo-graphs/transport_networks.html) | The case study: baseline, the residual split, whether APLS is the right objective, and two extensions measured before either was built. |
 | [Where Road Graphs Break](https://craig-corcoran.github.io/geo-graphs/where_road_graphs_break.html) | The replication and the ceiling argument in full, at more depth. |
+| [Roads From Pixels](https://craig-corcoran.github.io/geo-graphs/showcase.html) | Ten held-out chips with overlays, the per-chip score distribution, and where the pipeline fails visibly. |
+| [APLS, Pair by Pair](https://craig-corcoran.github.io/geo-graphs/apls_explainer.html) | Every route the metric took on four tiles, with the arithmetic for each sampled pair. |
 
-The sources live in `site/` as artifact bodies, with no doctype or head, which
-is what the publisher they were written for supplies itself. `make pages` wraps
-them in a skeleton into `docs/`, which is what Pages serves; edit `site/`, never
-`docs/`.
+The first two are written by hand in `site/`; the last two are built from the
+checkpoint by `make showcase` and `make apls-explainer`. All four are artifact
+bodies, with no doctype or head, because the publisher they target supplies that
+itself. `make pages` wraps each in a skeleton into `docs/`, which is what Pages
+serves, and writes the index. Edit the sources, never `docs/`.
 
 ## Getting started
 
