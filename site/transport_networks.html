@@ -388,7 +388,7 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <h1>Estimating Transportation Networks from Remote Sensing</h1>
 <p class="subtitle">Finding what is actually worth improving in a road-extraction model</p>
 <p class="lede">A road-extraction pipeline turns overhead satellite imagery into a routable graph of streets. This one scores <strong>0.80</strong> on APLS (Average Path Length Similarity), the SpaceNet&nbsp;3 challenge’s test of whether routes through the predicted graph match routes through the real one. The work below asks <strong>where the remaining error comes from, and which improvements are worth building.</strong></p>
-<p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction changes the roadmap: one plausible model extension is not worth building yet; another is.</p>
+<p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction sets the roadmap: one plausible model extension is not worth building yet; another is.</p>
 <dl class="meta">
 <div><dt>Data</dt><dd>SpaceNet 3, AOI 2 Las Vegas, 1 m/px</dd></div>
 <div><dt>Metric</dt><dd>APLS, validated against the published reference</dd></div>
@@ -499,12 +499,12 @@ APLS   = hmean( mean s over truth-&gt;model pairs , mean s over model-&gt;truth 
 <div class="rail">
 <span class="n">2</span>
 <span class="chip m">Measured</span>
-<span class="note">The residual splits in two, and only one half is reachable.</span>
+<span class="note">The residual splits in two. Both sides are reachable; one needs a new output representation.</span>
 </div>
 <div class="body">
-<h2>2 · Most remaining error needs no representation change; 0.028 does</h2>
-<p>The next step separates model error from pipeline limits. Ground-truth roads are rendered into a perfect mask, passed through the same thinning and cleanup steps, and scored. If the representation and post-processing could preserve the truth exactly, this ceiling test would return 1.0. It does not.</p>
-<p>On the held-out set, the model scores <strong>0.7976</strong> and the perfect-mask ceiling is <strong>0.9720</strong>. That splits the remaining gap into two qualitatively different problems: <strong>~0.174 can in principle be recovered by better optimization</strong>; <strong>~0.028 cannot be recovered without changing the output representation</strong>.</p>
+<h2>2 · Most remaining error needs no representation change</h2>
+<p>The next step separates model error from pipeline limits, still scoring with APLS, the routing metric section 1 describes. Ground-truth roads are rendered into a perfect mask, passed through the same thinning and cleanup steps, and scored. If the representation and post-processing could preserve the truth exactly, this ceiling test would return 1.0 APLS. It does not.</p>
+<p>On the held-out set, the model scores <strong>0.7976</strong> and the perfect-mask ceiling is <strong>0.9720</strong>. That splits the remaining gap into two qualitatively different problems: <strong>~0.174 of APLS can in principle be recovered by better optimization alone</strong>; <strong>~0.028 cannot be recovered without changing the output representation</strong>.</p>
 <p>The structural loss comes from <strong>grade-separated crossings</strong>. A 2D mask cannot represent “these roads cross in the image but do not connect.” When an overpass is flattened into a mask, tracing necessarily invents a junction, and sometimes a dramatic shortcut. In the worst observed case, even the graph traced from a perfect ground-truth mask creates a 14 m route where the true network requires 958 m. The shortcut therefore survives perfect segmentation: it is introduced by the representation and graph-conversion pipeline, not by the model.</p>
 <details class="more">
 <summary>How the competing explanation was ruled out</summary>
@@ -600,7 +600,7 @@ w_e^length  is proportional to  delta_e</div>
 <p><strong>Routing calls the change a gain. Coverage calls it marginal. Junction accuracy calls it damage.</strong> The reason is concrete: connecting dead ends to the middle of roads invents three-way intersections, and <strong>82% of those new junctions are not on the ground</strong>. APLS does not charge for that; a map someone looks at does.</p>
 <p>The metrics disagree about which edges matter, too: per-edge routing and coverage contributions correlate at only +0.22. Optimizing one is not a reliable proxy for optimizing the other.</p>
 <details class="more">
-<summary>How the control points are sampled, and what that quietly decides</summary>
+<summary>Where a control-point metric like APLS places its samples, and what that quietly decides</summary>
 <div class="inner">
 <p>Where those control points get placed turns out to matter as much as the formula
       they feed. The competition's reference implementation places interior points only on
@@ -706,7 +706,7 @@ w_e^length  is proportional to  delta_e</div>
       the edge of what this set can call.</figcaption>
 </figure>
 <p>The permuted-label control lands back at baseline, so the score is not something the fitting and scoring setup produces on its own. What it cannot settle is whether the classifier reads road appearance or memorised position, since permuting the labels breaks that association too. The split below is what addresses it.</p>
-<p>And 0.42 is a floor, not a ceiling: the underlying network was trained only to distinguish road from non-road, never to separate road classes.</p>
+<p>And 0.42 is a floor, not a ceiling: the U-Net that produced these features was trained only to separate road from non-road, never to tell one road class from another.</p>
 <p>The experiment also exposed a leakage risk: class is constant along a street, so random point splits can put pieces of the same road on both sides. Splitting by ground position reduced validation nodes carrying a street label memorizable from a training chip from <strong>45.4% to 0.67%</strong>.</p>
 <p><strong>Decision: build.</strong> Compare a model that pools features along each street with one that additionally passes messages across junctions. That isolates whether graph propagation adds value beyond simple aggregation, and the measured detection floor makes a null result interpretable.</p>
 </div>
@@ -715,10 +715,10 @@ w_e^length  is proportional to  delta_e</div>
 <div class="rail">
 <span class="n">5</span>
 <span class="chip d">Designed</span>
-<span class="note">Three dimensions, one real dependency between them.</span>
+<span class="note">Three directions. One dependency: lidar’s grade-separation value waits on the new output representation.</span>
 </div>
 <div class="body">
-<h2>5 · The measurements imply a different roadmap</h2>
+<h2>5 · The measurements set the roadmap</h2>
 <p>The experiments narrow the next steps to three distinct bets. The first targets the <strong>0.174 reachable without a representation change</strong>; the second removes the <strong>structural 0.028 ceiling</strong>; the third adds a new sensor only if it remains useful under partial coverage.</p><div class="roadmap-grid"><div class="roadmap-card"><span class="chip d">Designed</span><h3>1 · Train on route behavior, not only pixels</h3><p>The current model learns from pixel losses but is judged on routes. Test a differentiable route-aware term so training pressure matches the behavior the product metric rewards.</p></div><div class="roadmap-card"><span class="chip n">Not started</span><h3>2 · Move beyond a 2D mask</h3><p>Grade-separated roads are unrepresentable in the current output. A graph-native representation can model crossings without inventing junctions and bring the structural 0.028 back into reach.</p></div><div class="roadmap-card"><span class="chip f">Needs data</span><h3>3 · Test lidar under missing coverage</h3><p>The fusion plumbing works on synthetic height, but that proves implementation, not value. Real lidar should be tested for whether it helps where present without hurting where absent.</p></div></div><details class="more"><summary>Route-loss design and falsification test</summary><div class="inner"><h4>1 · Objective design</h4><p>The current pipeline minimizes cross-entropy plus Dice, both of which score pixels,
     and is then judged on APLS, which scores routes. Section 3 measured those
     disagreeing about what counts as an improvement. The response is to supervise something
@@ -761,11 +761,12 @@ l_len  =  psi_tau( |L - L_hat| / L )</div><dl class="symbols">
     reports 0.6443 APLS on SpaceNet Roads against 0.5377 for a segmentation U-Net in the same
     table (ECCV 2020, Table 1).</p><p>A separate question is whether a graph model should be a second stage at all. The
     road-class work reads features out of a frozen segmentation network, so geometry is
-    settled first and attributes are attached afterwards. That is convenient, and it caps
-    what the attribute model can know, since 0.42 macro-F1 is what falls out of features
-    optimized for a different task. A single network emitting geometry and attributes
-    together would not carry that cap, and 0.42 is the number it would have to beat to be
-    worth the extra complexity.</p></div></details><details class="more"><summary>Lidar fusion design and gating experiment</summary><div class="inner"><h4>3 · Lidar fusion under partial coverage</h4><p>Overhead imagery has specific blind spots. Shadow hides road, canopy covers it
+    settled first and attributes are attached afterwards. That is convenient, but it caps
+    what the attribute model can know: 0.42 macro-F1 is what features optimised for
+    segmentation happen to carry, not what the imagery supports. A single network emitting
+    geometry and attributes together would learn features for both tasks, so it would not
+    inherit that cap. 0.42 is therefore a floor, and the number an end-to-end model would
+    have to beat to justify the extra complexity.</p></div></details><details class="more"><summary>Lidar fusion design and gating experiment</summary><div class="inner"><h4>3 · Lidar fusion under partial coverage</h4><p>Overhead imagery has specific blind spots. Shadow hides road, canopy covers it
     outright, and nothing in an RGB pixel says how far off the ground it sits. Lidar speaks
     to all three: a normalized digital surface model measures height in meters, does not
     shift with atmosphere, sun angle, calibration or season, and returns the ground beneath a
