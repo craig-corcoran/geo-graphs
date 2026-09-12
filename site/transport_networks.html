@@ -394,7 +394,7 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <div><dt>Metric</dt><dd>APLS, validated against the published reference</dd></div>
 <div><dt>Stack</dt><dd>PyTorch, scikit-image, shapely, rasterio</dd></div>
 <div><dt>Shape of the work</dt><dd>Replication → diagnosis → go/no-go decisions → roadmap</dd></div>
-</dl><div class="exec-summary"><div><span class="exec-k">Reproduce</span><strong>0.80 APLS</strong><span>Competitive baseline; metric independently checked</span></div><div><span class="exec-k">Diagnose</span><strong>0.17 / 0.03</strong><span>Trainable headroom / representation ceiling</span></div><div><span class="exec-k">Decide</span><strong>1 defer · 1 build</strong><span>Measure candidate value before implementation</span></div></div>
+</dl><div class="exec-summary"><div><span class="exec-k">Reproduce</span><strong>0.80 APLS</strong><span>Competitive baseline; metric matches reference</span></div><div><span class="exec-k">Diagnose</span><strong>0.17 / 0.03</strong><span>Reachable without representation change / structural ceiling</span></div><div><span class="exec-k">Decide</span><strong>1 defer · 1 build</strong><span>Measure candidate value before implementation</span></div></div>
 </div>
 </header>
 <section class="apparatus">
@@ -408,7 +408,7 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <thead>
 <tr><th>Thread</th><th>State</th><th>What it establishes</th></tr>
 </thead>
-<tbody><tr><td>Can the baseline and evaluation be trusted?</td><td><span class="chip m">Measured</span></td><td>0.7976 APLS; metric implementation matches the published reference to 3×10⁻⁵.</td></tr><tr><td>Why is there still a 0.20 gap?</td><td><span class="chip m">Measured</span></td><td>~0.174 is optimization headroom; ~0.028 is a structural limit of a 2D mask.</td></tr><tr><td>Is APLS the right objective?</td><td><span class="chip m">Measured</span></td><td>Not by itself: routing, coverage, and junction accuracy can disagree on the sign of a change.</td></tr><tr><td>Is learned gap closing worth building now?</td><td><span class="chip f">Deferred</span></td><td>Even a perfect version buys only +0.0224 APLS and harms junction accuracy.</td></tr><tr><td>Is road-class inference worth building?</td><td><span class="chip m">Cleared to build</span></td><td>Existing features contain class signal well above baseline; the evaluation can resolve meaningful gains.</td></tr></tbody>
+<tbody><tr><td>Can the baseline and evaluation be trusted?</td><td><span class="chip m">Measured</span></td><td>0.7976 APLS; metric implementation matches the published reference to 3×10⁻⁵.</td></tr><tr><td>Why is there still a 0.20 gap?</td><td><span class="chip m">Measured</span></td><td>~0.174 is reachable without a representation change; ~0.028 is structurally inaccessible to a 2D mask.</td></tr><tr><td>Is APLS the right objective?</td><td><span class="chip m">Measured</span></td><td>Not by itself: routing, coverage, and junction accuracy can disagree on the sign of a change.</td></tr><tr><td>Is learned gap closing worth building now?</td><td><span class="chip f">Deferred</span></td><td>Even a perfect version buys only +0.0224 APLS and harms junction accuracy.</td></tr><tr><td>Is road-class inference worth building?</td><td><span class="chip m">Cleared to build</span></td><td>Existing features contain class signal well above baseline; the evaluation can resolve meaningful gains.</td></tr></tbody>
 </table>
 </div>
 <details class="more research-ledger">
@@ -441,8 +441,8 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <span class="note">Replication of the SpaceNet 3 baseline shape, plus an oracle to check the metric against.</span>
 </div>
 <div class="body">
-<h2>1 · The baseline is competitive; the evaluation is independently checked</h2>
-<p>The standard SpaceNet 3 pipeline—U-Net segmentation, thinning, then graph cleanup—reaches 0.7976 mean APLS on 155 held-out Las Vegas chips. That places the replication in the same performance regime reported by the challenge’s top systems on the same city, while the evaluation implementation is checked separately against the published reference.</p>
+<h2>1 · The baseline is competitive; the metric matches the reference implementation</h2>
+<p>The standard SpaceNet 3 pipeline—U-Net segmentation, thinning, then graph cleanup—reaches 0.7976 mean APLS on 155 held-out Las Vegas chips. That places the replication in the same performance regime reported by the challenge’s top systems on the same city, while the evaluation implementation is checked against the published reference.</p>
 <details class="more"><summary>How the evaluation was verified, and four bugs that produced believable numbers</summary><div class="inner"><p>The challenge metric is APLS, Average Path Length Similarity. It does not compare
     the two graphs directly. It samples pairs of points along the roads of one graph,
     measures how far you would travel between them in each graph, and scores the
@@ -502,7 +502,7 @@ APLS   = hmean( mean s over truth-&gt;model pairs , mean s over model-&gt;truth 
 <span class="note">The residual splits in two, and only one half is reachable.</span>
 </div>
 <div class="body">
-<h2>2 · Most remaining error is trainable; a smaller part is structural</h2>
+<h2>2 · Most remaining error needs no representation change; 0.028 does</h2>
 <p>The next step separates model error from pipeline limits. Ground-truth roads are rendered into a perfect mask, passed through the same thinning and cleanup steps, and scored. If the representation and post-processing could preserve the truth exactly, this ceiling test would return 1.0. It does not.</p>
 <p>On the held-out set, the model scores <strong>0.7976</strong> and the perfect-mask ceiling is <strong>0.9720</strong>. That splits the remaining gap into two qualitatively different problems: <strong>~0.174 can in principle be recovered by better optimization</strong>; <strong>~0.028 cannot be recovered without changing the output representation</strong>.</p>
 <p>The structural loss comes from <strong>grade-separated crossings</strong>. A 2D mask cannot represent “these roads cross in the image but do not connect.” When an overpass is flattened into a mask, tracing necessarily invents a junction, and sometimes a dramatic shortcut. In the worst observed case, even the graph traced from a perfect ground-truth mask creates a 14 m route where the true network requires 958 m. The shortcut therefore survives perfect segmentation: it is introduced by the representation and graph-conversion pipeline, not by the model.</p>
@@ -637,7 +637,7 @@ w_e^length  is proportional to  delta_e</div>
 <dt><span class="mono">ℓ<sub>k</sub></span></dt><dd>one of the objectives above, made differentiable</dd>
 <dt><span class="mono">w<sub>k</sub></span></dt><dd>how much that objective counts, which is the product decision</dd>
 </dl>
-<p style="margin-top:1.2rem">A weighted objective is reasonable only if the weights come from the application. Rather than burying that choice in a hyperparameter, each candidate should be reported on routing, coverage, and junction quality, with the Pareto frontier exposed. <strong>The model should not silently make a product decision.</strong></p>
+<p style="margin-top:1.2rem">A weighted objective is reasonable only if the weights come from the application. Rather than burying that choice in a hyperparameter, each candidate should be reported on routing, coverage, and junction quality, with the Pareto frontier exposed. <strong>The objective should not silently encode a product decision.</strong></p>
 </div>
 </section>
 <section class="chapter">
@@ -652,11 +652,8 @@ w_e^length  is proportional to  delta_e</div>
 <div class="verdict">
 <h3>Gap closing</h3><span class="chip f">Deferred</span>
 </div>
-<p><strong>Perfect-case value: +0.0224 APLS, only 12.8% of reachable headroom.</strong> Worse, realistic candidate designs differ by roughly 0.002 APLS against a 0.005 standard error, so this evaluation cannot reliably tell them apart. The intervention also reduces junction F1 by 0.024. The opportunity is real, but too small and too poorly resolved to prioritize now.</p>
+<p><strong>Perfect-case value: +0.0224 APLS, only 12.8% of reachable headroom.</strong> Worse, realistic candidate designs (a distance rule, a small network, a graph network) differ by roughly 0.002 APLS against a 0.005 standard error, so this evaluation cannot reliably tell them apart. The intervention also reduces junction F1 by 0.024. The opportunity is real, but too small and too poorly resolved to prioritize now.</p>
 <ul class="tight">
-<li>Plausible differences between the candidate designs (a distance rule, a small
-      network, a graph network) are around 0.002 APLS against a standard error of 0.005. The experiment returns "no detectable difference" whatever the truth is, and
-      telling those designs apart was the entire point of running it.</li>
 <li>Judged on intersection accuracy it is harmful, at −0.0240 junction F1, for
       the reason section 3 gives.</li>
 <li>The most likely objection was checked and points the same way. Against a pinned
@@ -677,6 +674,7 @@ w_e^length  is proportional to  delta_e</div>
 <div class="verdict">
 <h3>Road-class inference</h3><span class="chip m">Cleared to build</span>
 </div>
+<p>The existing segmentation features already contain substantial road-class signal, and the evaluation is powerful enough to measure whether a richer model improves it.</p>
 <p>The second candidate predicts road class (motorway, primary, secondary, tertiary, residential, or unclassified) using features already produced by the segmentation network. This matters to both rendering and routing, and APLS does not measure it.</p>
 <p>Before training a richer model, the experiment first measures an evaluation <strong>detection floor of 0.0358 macro-F1</strong> from chip-to-chip variance and correlated errors, then asks whether the frozen segmentation features contain class signal at all. They do: a linear probe reaches <strong>0.3820</strong> macro-F1 versus a <strong>0.1165</strong> majority baseline; a small MLP reaches <strong>0.4191</strong>.</p>
 <figure>
@@ -721,7 +719,7 @@ w_e^length  is proportional to  delta_e</div>
 </div>
 <div class="body">
 <h2>5 · The measurements imply a different roadmap</h2>
-<p>The experiments narrow the next steps to three distinct bets. The first targets the <strong>trainable 0.174</strong>; the second removes the <strong>structural 0.028 ceiling</strong>; the third adds a new sensor only if it remains useful under partial coverage.</p><div class="roadmap-grid"><div class="roadmap-card"><span class="chip d">Designed</span><h3>1 · Train on route behavior, not only pixels</h3><p>The current model learns from pixel losses but is judged on routes. Test a differentiable route-aware term so training pressure matches the behavior the product metric rewards.</p></div><div class="roadmap-card"><span class="chip n">Not started</span><h3>2 · Move beyond a 2D mask</h3><p>Grade-separated roads are unrepresentable in the current output. A graph-native representation can model crossings without inventing junctions and bring the structural 0.028 back into reach.</p></div><div class="roadmap-card"><span class="chip f">Needs data</span><h3>3 · Test lidar under missing coverage</h3><p>The fusion plumbing works on synthetic height, but that proves implementation, not value. Real lidar should be tested for whether it helps where present without hurting where absent.</p></div></div><details class="more"><summary>Route-loss design and falsification test</summary><div class="inner"><h4>1 · Objective design</h4><p>The current pipeline minimizes cross-entropy plus Dice, both of which score pixels,
+<p>The experiments narrow the next steps to three distinct bets. The first targets the <strong>0.174 reachable without a representation change</strong>; the second removes the <strong>structural 0.028 ceiling</strong>; the third adds a new sensor only if it remains useful under partial coverage.</p><div class="roadmap-grid"><div class="roadmap-card"><span class="chip d">Designed</span><h3>1 · Train on route behavior, not only pixels</h3><p>The current model learns from pixel losses but is judged on routes. Test a differentiable route-aware term so training pressure matches the behavior the product metric rewards.</p></div><div class="roadmap-card"><span class="chip n">Not started</span><h3>2 · Move beyond a 2D mask</h3><p>Grade-separated roads are unrepresentable in the current output. A graph-native representation can model crossings without inventing junctions and bring the structural 0.028 back into reach.</p></div><div class="roadmap-card"><span class="chip f">Needs data</span><h3>3 · Test lidar under missing coverage</h3><p>The fusion plumbing works on synthetic height, but that proves implementation, not value. Real lidar should be tested for whether it helps where present without hurting where absent.</p></div></div><details class="more"><summary>Route-loss design and falsification test</summary><div class="inner"><h4>1 · Objective design</h4><p>The current pipeline minimizes cross-entropy plus Dice, both of which score pixels,
     and is then judged on APLS, which scores routes. Section 3 measured those
     disagreeing about what counts as an improvement. The response is to supervise something
     closer to what is being measured. APLS itself cannot be optimized directly: it samples
