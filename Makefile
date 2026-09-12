@@ -44,7 +44,7 @@ SPACENET_PRODUCT  ?= PS-RGB
 SPACENET_LABELS   ?= geojson_roads
 
 .DEFAULT_GOAL := help
-.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep attr-resolvability split-sweep freeze-split attr-probe osm-crosscheck fetch-osm-extract showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
+.PHONY: help sync format lint typecheck test-offline test-network test check clean roundtrip examples train coverage-endpoints threshold-sweep census link-oracle cleanup-sweep snap-sweep attr-resolvability split-sweep freeze-split attr-probe osm-crosscheck fetch-osm-extract pages showcase apls-explainer fetch-spacenet extract-spacenet spacenet-usage
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -136,6 +136,9 @@ fetch-osm-extract:  ## Download the Geofabrik OSM extract into DATA_DIR and veri
 
 examples:  ## Execute the walkthrough notebook to prove it still runs (hits the network)
 	$(UV) run jupyter execute $(EXAMPLES)/*.ipynb
+
+pages:  ## Rebuild the GitHub Pages copies in docs/ from site/ (no network)
+	$(UV) run python $(SCRIPTS)/build_pages.py
 
 showcase:  ## Rebuild the showcase page from the checkpoint (writes outputs/showcase.html)
 	$(UV) run python $(SCRIPTS)/build_site_data.py $(SHOWCASE_ARGS)

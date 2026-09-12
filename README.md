@@ -43,12 +43,17 @@ work; `plans/` holds the designs that have not been built.
 
 ## Write-ups
 
-`site/` holds two self-contained pages, each a single HTML file:
+Both are readable at **https://craig-corcoran.github.io/geo-graphs/**.
 
-| file | what it covers |
+| page | what it covers |
 |---|---|
-| `transport_networks.html` | The case study: baseline, the residual split, whether APLS is the right objective, and two extensions measured before either was built. |
-| `where_road_graphs_break.html` | The replication and the ceiling argument in full, at more depth. |
+| [Estimating Transportation Networks](https://craig-corcoran.github.io/geo-graphs/transport_networks.html) | The case study: baseline, the residual split, whether APLS is the right objective, and two extensions measured before either was built. |
+| [Where Road Graphs Break](https://craig-corcoran.github.io/geo-graphs/where_road_graphs_break.html) | The replication and the ceiling argument in full, at more depth. |
+
+The sources live in `site/` as artifact bodies, with no doctype or head, which
+is what the publisher they were written for supplies itself. `make pages` wraps
+them in a skeleton into `docs/`, which is what Pages serves; edit `site/`, never
+`docs/`.
 
 ## Getting started
 
