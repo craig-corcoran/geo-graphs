@@ -396,7 +396,8 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <h1>Estimating Transportation Networks from Remote Sensing</h1>
 <p class="subtitle">Finding what is actually worth improving in a road-extraction model</p>
 <p class="lede">A road-extraction pipeline turns overhead satellite imagery into a routable graph of streets. This one scores <strong>0.80</strong> on APLS (Average Path Length Similarity), the SpaceNet&nbsp;3 challenge’s test of whether routes through the predicted graph match routes through the real one. The work below asks <strong>where the remaining error comes from, and which improvements are worth building.</strong></p>
-<p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction sets the roadmap: one plausible model extension is not worth building yet; another is.</p>
+<p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>.</p>
+<p class="lede">Routing, coverage and junction accuracy disagree about whether the same change is an improvement, so <strong>which of them to optimise is a product decision</strong>. Both candidate extensions were measured before either was built: gap closing is deferred, road-class inference is cleared. What survives sets the roadmap.</p>
 <dl class="meta">
 <div><dt>Data</dt><dd>SpaceNet 3, AOI 2 Las Vegas, 1 m/px</dd></div>
 <div><dt>Metric</dt><dd>APLS, validated against the published reference</dd></div>
