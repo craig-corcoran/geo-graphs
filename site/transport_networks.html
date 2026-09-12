@@ -385,7 +385,7 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <style>.exec-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:1.7rem}.exec-summary>div{background:var(--surface);padding:.9rem 1rem;display:flex;flex-direction:column;gap:.12rem}.exec-k{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}.exec-summary strong{font-family:var(--display);font-size:1.15rem}.exec-summary span:last-child{font-size:.8rem;color:var(--ink-3);line-height:1.35}.roadmap-grid,.takeaway-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.9rem;margin:1.25rem 0}.roadmap-card{border:1px solid var(--rule);background:var(--surface);padding:1rem}.roadmap-card h3{margin:.6rem 0 .45rem;font-size:1rem}.roadmap-card p{font-size:.9rem;color:var(--ink-2)}.takeaway{border-top:1px solid var(--rule);background:var(--surface);padding:3rem 0}.takeaway h2{max-width:34ch}.takeaway-grid{grid-template-columns:repeat(2,1fr);gap:0 2rem}.takeaway-grid p{padding:.8rem 0;border-top:1px solid var(--rule);font-size:.94rem}@media(max-width:720px){.exec-summary,.roadmap-grid,.takeaway-grid{grid-template-columns:1fr}}</style><header class="masthead">
 <div class="wrap">
 <p class="eyebrow">Applied ML case study &middot; SpaceNet&nbsp;3 &middot; Las Vegas as a development proxy</p>
-<h1>Estimating transportation networks from remote sensing</h1>
+<h1>Estimating Transportation Networks from Remote Sensing</h1>
 <p class="subtitle">Finding what is actually worth improving in a road-extraction model</p>
 <p class="lede">A road-extraction pipeline turns overhead satellite imagery into a routable graph of streets. This one scores <strong>0.80</strong> on APLS (Average Path Length Similarity), the SpaceNet&nbsp;3 challenge’s test of whether routes through the predicted graph match routes through the real one. The work below asks <strong>where the remaining error comes from, and which improvements are worth building.</strong></p>
 <p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction changes the roadmap: one plausible model extension is not worth building yet; another is.</p>
@@ -700,12 +700,14 @@ w_e^length  is proportional to  delta_e</div>
 <line stroke="var(--designed)" stroke-dasharray="4 3" stroke-width="1.5" x1="559.1" x2="559.1" y1="76" y2="166"></line>
 <line stroke="var(--rule-strong)" stroke-width="1" x1="158" x2="158" y1="8" y2="142"></line>
 </svg>
-<figcaption>The shuffled-label control is the falsifier and it lands on the baseline,
-      0.1242 against 0.1165. The dashed line marks 0.3820 plus the 0.0358 detection floor:
-      the MLP's 0.0371 step over the linear probe clears it by 0.0013, which is to say it
-      sits at the very edge of what this evaluation set can call.</figcaption>
+<figcaption>The control refits on the same features with the class labels randomly
+      permuted, so they carry no information. If the setup could score well on those, 0.3820
+      would mean nothing; it returns 0.1242 against the 0.1165 baseline. The dashed line sits
+      0.0358 above the linear probe, the smallest macro-F1 gap these 226 chips can resolve at
+      80% power. The MLP’s 0.0371 step clears it by 0.0013, so “the MLP is better” is right at
+      the edge of what this set can call.</figcaption>
 </figure>
-<p>A shuffled-label control lands back at baseline, which argues that the classifier is reading road appearance rather than incidental location or split leakage.</p>
+<p>The permuted-label control lands back at baseline, so the score is not something the fitting and scoring setup produces on its own. What it cannot settle is whether the classifier reads road appearance or memorised position, since permuting the labels breaks that association too. The split below is what addresses it.</p>
 <p>And 0.42 is a floor, not a ceiling: the underlying network was trained only to distinguish road from non-road, never to separate road classes.</p>
 <p>The experiment also exposed a leakage risk: class is constant along a street, so random point splits can put pieces of the same road on both sides. Splitting by ground position reduced validation nodes carrying a street label memorizable from a training chip from <strong>45.4% to 0.67%</strong>.</p>
 <p><strong>Decision: build.</strong> Compare a model that pools features along each street with one that additionally passes messages across junctions. That isolates whether graph propagation adds value beyond simple aggregation, and the measured detection floor makes a null result interpretable.</p>
