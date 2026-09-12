@@ -132,6 +132,12 @@ a:focus-visible { outline: 2px solid var(--measured); outline-offset: 3px; borde
 /* ---------- masthead ---------- */
 
 .masthead { padding: clamp(2.6rem, 7vw, 4.6rem) 0 2rem; }
+.subtitle {
+  font-family: var(--display); font-weight: 600;
+  font-size: clamp(1.05rem, 2.1vw, 1.32rem);
+  line-height: 1.3; letter-spacing: -0.012em;
+  color: var(--ink-3); max-width: 34ch; margin: -0.35rem 0 1.3rem;
+}
 .lede { font-size: 1.12rem; color: var(--ink-2); max-width: 62ch; }
 .lede strong { color: var(--ink); }
 
@@ -199,6 +205,9 @@ th.num { text-align: right; padding-right: 1.2rem; }
   border-top: 1px solid var(--rule);
 }
 .chapter:first-of-type { border-top: none; }
+/* Without this a grid item's automatic minimum is its min-content width, and
+   one wide figure stretches the column past a narrow viewport. */
+.chapter > * { min-width: 0; }
 .rail { position: sticky; top: 1.4rem; align-self: start; padding-bottom: 2rem; }
 .rail .n {
   font-family: var(--display); font-size: 2.4rem; font-weight: 800;
@@ -316,7 +325,7 @@ ul.tight li::marker { color: var(--ink-3); }
 /* ---------- math ---------- */
 
 .math-display {
-  margin: 1.1rem 0;
+  margin: 1.1rem 0 0.5rem;
   padding: 0.85rem 0.95rem;
   background: var(--sunk);
   border: 1px solid var(--rule);
@@ -335,6 +344,13 @@ dl.symbols {
   display: grid; grid-template-columns: auto minmax(0, 1fr);
   gap: 0.4rem 1.1rem; margin: 0.9rem 0 0; max-width: var(--measure);
   font-size: 0.89rem;
+}
+/* A list that annotates the equation directly above it hangs off that box
+   rather than floating midway to the next paragraph. */
+.math-display + dl.symbols {
+  margin-top: 0;
+  padding-left: 0.95rem;
+  border-left: 1px solid var(--rule);
 }
 dl.symbols dt { color: var(--ink); padding-top: 0.04rem; text-align: right; white-space: nowrap; }
 dl.symbols dd { margin: 0; color: var(--ink-2); }
@@ -369,9 +385,10 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
 <style>.exec-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:1.7rem}.exec-summary>div{background:var(--surface);padding:.9rem 1rem;display:flex;flex-direction:column;gap:.12rem}.exec-k{font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}.exec-summary strong{font-family:var(--display);font-size:1.15rem}.exec-summary span:last-child{font-size:.8rem;color:var(--ink-3);line-height:1.35}.roadmap-grid,.takeaway-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.9rem;margin:1.25rem 0}.roadmap-card{border:1px solid var(--rule);background:var(--surface);padding:1rem}.roadmap-card h3{margin:.6rem 0 .45rem;font-size:1rem}.roadmap-card p{font-size:.9rem;color:var(--ink-2)}.takeaway{border-top:1px solid var(--rule);background:var(--surface);padding:3rem 0}.takeaway h2{max-width:34ch}.takeaway-grid{grid-template-columns:repeat(2,1fr);gap:0 2rem}.takeaway-grid p{padding:.8rem 0;border-top:1px solid var(--rule);font-size:.94rem}@media(max-width:720px){.exec-summary,.roadmap-grid,.takeaway-grid{grid-template-columns:1fr}}</style><header class="masthead">
 <div class="wrap">
 <p class="eyebrow">Applied ML case study &middot; SpaceNet&nbsp;3 &middot; Las Vegas as a development proxy</p>
-<h1>Finding what is actually worth improving in a road-extraction model</h1>
-<p class="lede">A competitive satellite-to-road-graph pipeline is useful only if the remaining error can be turned into decisions. The question here is <strong>where the remaining error comes from, and which improvements are worth building.</strong></p>
-<p class="lede">The baseline reaches <strong>0.80 APLS</strong>. Decomposing the remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction changes the roadmap: one plausible model extension is not worth building yet; another is.</p>
+<h1>Estimating transportation networks from remote sensing</h1>
+<p class="subtitle">Finding what is actually worth improving in a road-extraction model</p>
+<p class="lede">A road-extraction pipeline turns overhead satellite imagery into a routable graph of streets. This one scores <strong>0.80</strong> on APLS (Average Path Length Similarity), the SpaceNet&nbsp;3 challenge’s test of whether routes through the predicted graph match routes through the real one. The work below asks <strong>where the remaining error comes from, and which improvements are worth building.</strong></p>
+<p class="lede">Decomposing that remaining gap shows that about <strong>0.17 is reachable through better optimization</strong>, while roughly <strong>0.03 is imposed by the 2D mask representation itself</strong>. That distinction changes the roadmap: one plausible model extension is not worth building yet; another is.</p>
 <dl class="meta">
 <div><dt>Data</dt><dd>SpaceNet 3, AOI 2 Las Vegas, 1 m/px</dd></div>
 <div><dt>Metric</dt><dd>APLS, validated against the published reference</dd></div>
@@ -430,7 +447,20 @@ footer { padding: 2.6rem 0 3.6rem; border-top: 1px solid var(--rule); }
     the two graphs directly. It samples pairs of points along the roads of one graph,
     measures how far you would travel between them in each graph, and scores the
     difference:</p><div class="math-display" data-tex="\begin{aligned} s(a,b) \;&amp;=\; 1 - \min\!\left(1,\; \frac{\lvert \ell_a - \ell_b\rvert}{\ell_a}\right) \\[6pt] \mathrm{APLS} \;&amp;=\; \operatorname{hmean}\!\left(\,\overline{s}_{\;\mathrm{truth}\,\to\,\mathrm{model}}\;,\;\; \overline{s}_{\;\mathrm{model}\,\to\,\mathrm{truth}}\,\right) \end{aligned}">s(a,b) = 1 - min(1, |l_a - l_b| / l_a)
-APLS   = hmean( mean s over truth-&gt;model pairs , mean s over model-&gt;truth pairs )</div><p style="margin-top:1.2rem">Sampling from the truth and snapping onto the model
+APLS   = hmean( mean s over truth-&gt;model pairs , mean s over model-&gt;truth pairs )</div><dl class="symbols">
+<dt><span class="mono">a, b</span></dt>
+<dd>a pair of control points, placed along the roads of one graph at fixed spacing</dd>
+<dt><span class="mono">ℓ<sub>a</sub></span></dt>
+<dd>shortest-path distance from <span class="mono">a</span> to <span class="mono">b</span> in the graph they were sampled from</dd>
+<dt><span class="mono">ℓ<sub>b</sub></span></dt>
+<dd>the same distance after both points are snapped onto the other graph, or infinite if no route exists</dd>
+<dt><span class="mono">s(a,b)</span></dt>
+<dd>the pair's score, 1 for an exact match and 0 once the lengths differ by 100% or no route exists</dd>
+<dt><span class="mono">s̄</span></dt>
+<dd>the mean of <span class="mono">s</span> over every pair sampled in one direction</dd>
+<dt><span class="mono">hmean</span></dt>
+<dd>harmonic mean of the two directions, so a proposal has to satisfy both</dd>
+</dl><p style="margin-top:1.2rem">Sampling from the truth and snapping onto the model
     punishes roads that are missing. Reversing the roles punishes roads that were invented.
     Because a missing route scores zero outright and the two directions combine
     harmonically, recovering half the network perfectly still scores near zero.</p><p>APLS was reimplemented here rather than imported, so that the two directions could be
@@ -458,20 +488,6 @@ APLS   = hmean( mean s over truth-&gt;model pairs , mean s over model-&gt;truth 
           endpoints and a length, which is exactly what the two arcs of a loop do.</li>
 </ul>
 </div></details>
-<dl class="symbols">
-<dt><span class="mono">a, b</span></dt>
-<dd>a pair of control points, placed along the roads of one graph at fixed spacing</dd>
-<dt><span class="mono">ℓ<sub>a</sub></span></dt>
-<dd>shortest-path distance from <span class="mono">a</span> to <span class="mono">b</span> in the graph they were sampled from</dd>
-<dt><span class="mono">ℓ<sub>b</sub></span></dt>
-<dd>the same distance after both points are snapped onto the other graph, or infinite if no route exists</dd>
-<dt><span class="mono">s(a,b)</span></dt>
-<dd>the pair's score, 1 for an exact match and 0 once the lengths differ by 100% or no route exists</dd>
-<dt><span class="mono">s̄</span></dt>
-<dd>the mean of <span class="mono">s</span> over every pair sampled in one direction</dd>
-<dt><span class="mono">hmean</span></dt>
-<dd>harmonic mean of the two directions, so a proposal has to satisfy both</dd>
-</dl>
 <p><strong>Result:</strong> 0.7976 mean APLS on 155 held-out chips. The top five SpaceNet 3 entries reported 0.771–0.801 on Las Vegas. The splits differ, so this is not a leaderboard claim; it is evidence that the replication is in the right regime.</p>
 
 <a class="further" href="https://claude.ai/code/artifact/2c1798d0-45af-4049-877d-775fa015a82b">
@@ -542,7 +558,7 @@ w_e^length  is proportional to  delta_e</div>
 <dt><span class="mono">δ<sub>e</sub></span></dt><dd>the length of edge <span class="mono">e</span></dd>
 <dt><span class="mono">w<sub>e</sub></span></dt><dd>how much that edge being right or wrong moves the score</dd>
 </dl>
-<p>An arterial dominates a routing metric; a cul-de-sac may barely register. A rendering or digital-twin product may care about both because every visible street and false junction is a defect.</p>
+<p style="margin-top:1.2rem">An arterial dominates a routing metric; a cul-de-sac may barely register. A rendering or digital-twin product may care about both because every visible street and false junction is a defect.</p>
 <p>The same candidate change is therefore evaluated under routing, coverage, and junction accuracy rather than assuming one benchmark tells the whole story.</p>
 <h3>One intervention, three metrics, opposite conclusions</h3>
 <p>Section 4 describes an oracle that adds a fixed set of 443 edges to the model's
